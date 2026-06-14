@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+  --color-cream-50: #fdfcfa;
+  --color-cream-100: #faf8f5;
+  --color-cream-200: #f5f0ea;
+  --color-cream-300: #e8e0d4;
+  --color-gold-400: #c9a96e;
+  --color-gold-500: #b8933f;
+  --color-gold-600: #9a7a30;
+  --color-noir-900: #0a0a0a;
+  --color-noir-800: #141414;
+  --color-noir-700: #1e1e1e;
+  --color-noir-600: #2a2a2a;
+  --color-noir-500: #3a3a3a;
+  --color-noir-400: #555555;
+  --color-noir-300: #777777;
+  --color-noir-200: #aaaaaa;
+  --color-noir-100: #d4d4d4;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d4d4d4 transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  background: #fdfcfa;
+  color: #0a0a0a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-display {
+  font-family: "Playfair Display", ui-serif, Georgia, serif;
+}
+
+::selection {
+  background-color: #0a0a0a;
+  color: #fdfcfa;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+.animate-slide-right {
+  animation: slideRight 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.shimmer {
+  background: linear-gradient(90deg, #f5f0ea 25%, #e8e0d4 50%, #f5f0ea 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.product-img-wrapper:hover .product-img {
+  transform: scale(1.06);
+}
+
+.product-img-wrapper:hover .product-overlay {
+  opacity: 1;
+}
+
+.product-img-wrapper:hover .quick-view-btn {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
