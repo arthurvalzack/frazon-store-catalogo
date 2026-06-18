@@ -1,4 +1,4 @@
-import type { AdminSession, CartItem, Category, Order, OrderItem, Product, ProductBadge, ProductColor, ProductVariant, SiteSettings } from '@/types';
+import type { AdminSession, CartItem, Category, HomeBanner, Order, OrderItem, Product, ProductBadge, ProductColor, ProductVariant, SiteSettings } from '@/types';
 import { INVENTORY_SYNC_WARNING, syncInventoryProduct } from '@/lib/inventorySync';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
@@ -24,10 +24,21 @@ export const defaultSettings: SiteSettings = {
   storeName: 'Frazon Store',
   whatsappNumber: '5561998273587',
   heroEyebrow: 'Streetwear masculino',
-  heroTitle: 'Estilo que impõe',
-  heroItalicTitle: 'presença',
-  heroSubtitle: 'Peças masculinas selecionadas para quem busca conforto, atitude e presença no dia a dia.',
+  heroTitle: 'Estilo que imp\u00f5e',
+  heroItalicTitle: 'presen\u00e7a',
+  heroSubtitle: 'Pe\u00e7as masculinas selecionadas para quem busca conforto, atitude e presen\u00e7a no dia a dia.',
   heroImage: DEFAULT_HERO,
+  heroImageMobile: '',
+  heroImageDesktop: '',
+  heroTitleLine1: 'VISTA SUA',
+  heroTitleLine2: 'ESS\u00caNCIA',
+  heroSubtitleLine1: 'ROUPAS PARA HOMENS',
+  heroSubtitleLine2: 'QUE IMP\u00d5EM PRESEN\u00c7A',
+  heroButtonText: 'EXPLORAR CAT\u00c1LOGO',
+  heroTopbarText1: 'NOVIDADES EXCLUSIVAS',
+  heroTopbarText2: 'PEDIDO DIRETO NO WHATSAPP',
+  heroTopbarText3: 'ENVIO PARA TODO BRASIL',
+  homeBanners: [],
   aboutEyebrow: 'Sobre a Frazon Store',
   aboutTitle: 'Streetwear com',
   aboutItalicWord: 'presenÃ§a',
@@ -83,10 +94,10 @@ const demoProducts: Product[] = [
 
 let productsCache: Product[] = [];
 let categoriesCache: Category[] = defaultCategories;
-let settingsCache: SiteSettings = readStorage<SiteSettings>(
+let settingsCache: SiteSettings = normalizeSettingsObject(readStorage<SiteSettings>(
   SETTINGS_CACHE_KEY,
   readStorage<SiteSettings>(LEGACY_SETTINGS_CACHE_KEY, defaultSettings),
-);
+));
 let inventorySyncWarning = '';
 let productsRealtimeSocket: WebSocket | null = null;
 let productsRealtimeHeartbeat: number | undefined;
@@ -97,6 +108,7 @@ let productsRealtimeSubscribers = new Set<(products: Product[]) => void>();
 let productsRealtimeVisibilityHandler: (() => void) | null = null;
 let productsRealtimeReloading = false;
 let productsRealtimeFallbackEnabled = false;
+let adminSessionCache: AdminSession | null = null;
 
 type ProductRealtimePayload = {
   eventType?: string;
@@ -135,6 +147,10 @@ function writeStorage<T>(key: string, value: T): void {
   }
 }
 
+function normalizeSettingsObject(settings: Partial<SiteSettings> | SiteSettings): SiteSettings {
+  return { ...defaultSettings, ...settings, homeBanners: normalizeHomeBanners(settings.homeBanners) };
+}
+
 export function generateSlug(name: string): string {
   return name
     .toLowerCase()
@@ -161,9 +177,12 @@ function authHeader(token?: string): string {
 }
 
 function getSession(): AdminSession | null {
-  const session = readStorage<AdminSession | null>(ADMIN_SESSION_KEY, null);
-  if (!session || !session.accessToken || Date.now() > session.expiresAt) return null;
-  return session;
+  clearLegacyAdminSessionStorage();
+  if (!adminSessionCache || !adminSessionCache.accessToken || Date.now() > adminSessionCache.expiresAt) {
+    adminSessionCache = null;
+    return null;
+  }
+  return adminSessionCache;
 }
 
 export function getAdminSession(): AdminSession | null {
@@ -249,6 +268,17 @@ type SettingsRow = {
   hero_italic_title: string | null;
   hero_subtitle: string | null;
   hero_image: string | null;
+  hero_image_mobile?: string | null;
+  hero_image_desktop?: string | null;
+  hero_title_line_1?: string | null;
+  hero_title_line_2?: string | null;
+  hero_subtitle_line_1?: string | null;
+  hero_subtitle_line_2?: string | null;
+  hero_button_text?: string | null;
+  hero_topbar_text_1?: string | null;
+  hero_topbar_text_2?: string | null;
+  hero_topbar_text_3?: string | null;
+  home_banners?: HomeBanner[] | null;
   about_eyebrow: string | null;
   about_title: string | null;
   about_italic_word: string | null;
@@ -349,6 +379,43 @@ function categoryToRow(category: Partial<Category>): Record<string, unknown> {
   return row;
 }
 
+function normalizeHomeBanners(value: unknown): HomeBanner[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 4)
+    .map((banner, index) => {
+      const item = banner as Partial<HomeBanner>;
+      return {
+        id: String(item.id || `banner_${index + 1}`),
+        mobile: sanitizeStoredImageUrl(item.mobile),
+        desktop: sanitizeStoredImageUrl(item.desktop),
+        link: sanitizeStoredBannerLink(item.link),
+      };
+    });
+}
+
+function sanitizeStoredImageUrl(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const url = value.trim();
+  if (!url) return '';
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:')) return '';
+  if (url.length > 2048) return '';
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/')) return url;
+  return '';
+}
+
+function sanitizeStoredBannerLink(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const url = value.trim();
+  if (!url) return '';
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (url.length > 2048) return '';
+  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url;
+  return '';
+}
+
 function rowToSettings(row?: SettingsRow): SiteSettings {
   if (!row) return defaultSettings;
   return {
@@ -359,6 +426,17 @@ function rowToSettings(row?: SettingsRow): SiteSettings {
     heroItalicTitle: row.hero_italic_title || defaultSettings.heroItalicTitle,
     heroSubtitle: row.hero_subtitle || defaultSettings.heroSubtitle,
     heroImage: row.hero_image || '',
+    heroImageMobile: row.hero_image_mobile || defaultSettings.heroImageMobile,
+    heroImageDesktop: row.hero_image_desktop || defaultSettings.heroImageDesktop,
+    heroTitleLine1: row.hero_title_line_1 || defaultSettings.heroTitleLine1,
+    heroTitleLine2: row.hero_title_line_2 || defaultSettings.heroTitleLine2,
+    heroSubtitleLine1: row.hero_subtitle_line_1 || defaultSettings.heroSubtitleLine1,
+    heroSubtitleLine2: row.hero_subtitle_line_2 || defaultSettings.heroSubtitleLine2,
+    heroButtonText: row.hero_button_text || defaultSettings.heroButtonText,
+    heroTopbarText1: row.hero_topbar_text_1 || defaultSettings.heroTopbarText1,
+    heroTopbarText2: row.hero_topbar_text_2 || defaultSettings.heroTopbarText2,
+    heroTopbarText3: row.hero_topbar_text_3 || defaultSettings.heroTopbarText3,
+    homeBanners: normalizeHomeBanners(row.home_banners),
     aboutEyebrow: row.about_eyebrow || defaultSettings.aboutEyebrow,
     aboutTitle: row.about_title || defaultSettings.aboutTitle,
     aboutItalicWord: row.about_italic_word || defaultSettings.aboutItalicWord,
@@ -386,7 +464,18 @@ function settingsToRow(settings: SiteSettings): Record<string, unknown> {
     hero_title: settings.heroTitle,
     hero_italic_title: settings.heroItalicTitle,
     hero_subtitle: settings.heroSubtitle,
-    hero_image: settings.heroImage,
+    hero_image: sanitizeStoredImageUrl(settings.heroImage),
+    hero_image_mobile: sanitizeStoredImageUrl(settings.heroImageMobile),
+    hero_image_desktop: sanitizeStoredImageUrl(settings.heroImageDesktop),
+    hero_title_line_1: settings.heroTitleLine1,
+    hero_title_line_2: settings.heroTitleLine2,
+    hero_subtitle_line_1: settings.heroSubtitleLine1,
+    hero_subtitle_line_2: settings.heroSubtitleLine2,
+    hero_button_text: settings.heroButtonText,
+    hero_topbar_text_1: settings.heroTopbarText1,
+    hero_topbar_text_2: settings.heroTopbarText2,
+    hero_topbar_text_3: settings.heroTopbarText3,
+    home_banners: normalizeHomeBanners(settings.homeBanners),
     about_eyebrow: settings.aboutEyebrow,
     about_title: settings.aboutTitle,
     about_italic_word: settings.aboutItalicWord,
@@ -395,7 +484,7 @@ function settingsToRow(settings: SiteSettings): Record<string, unknown> {
     editorial_title: settings.editorialTitle,
     editorial_italic_title: settings.editorialItalicTitle,
     editorial_text: settings.editorialText,
-    editorial_image: settings.editorialImage,
+    editorial_image: sanitizeStoredImageUrl(settings.editorialImage),
     instagram_url: settings.instagramUrl,
     email: settings.email,
     address: settings.address,
@@ -463,7 +552,7 @@ export async function loadCatalogData(force = false): Promise<{ products: Produc
   if (!hasSupabaseConfig()) {
     productsCache = readStorage<Product[]>(PRODUCT_CACHE_KEY, demoProducts);
     categoriesCache = readStorage<Category[]>(CATEGORY_CACHE_KEY, defaultCategories);
-    settingsCache = readStorage<SiteSettings>(SETTINGS_CACHE_KEY, defaultSettings);
+    settingsCache = normalizeSettingsObject(readStorage<SiteSettings>(SETTINGS_CACHE_KEY, defaultSettings));
     return { products: productsCache, categories: categoriesCache, settings: settingsCache };
   }
 
@@ -483,7 +572,7 @@ export async function loadCatalogData(force = false): Promise<{ products: Produc
     console.error('[FRAZON CATALOG LOAD ERROR]', error);
     productsCache = readStorage<Product[]>(PRODUCT_CACHE_KEY, []);
     categoriesCache = readStorage<Category[]>(CATEGORY_CACHE_KEY, defaultCategories);
-    settingsCache = readStorage<SiteSettings>(SETTINGS_CACHE_KEY, defaultSettings);
+    settingsCache = normalizeSettingsObject(readStorage<SiteSettings>(SETTINGS_CACHE_KEY, defaultSettings));
   }
 
   return { products: productsCache, categories: categoriesCache, settings: settingsCache };
@@ -688,10 +777,10 @@ export function getActiveCategories(): Category[] {
 }
 
 export function getSettings(): SiteSettings {
-  settingsCache = readStorage<SiteSettings>(
+  settingsCache = normalizeSettingsObject(readStorage<SiteSettings>(
     SETTINGS_CACHE_KEY,
     readStorage<SiteSettings>(LEGACY_SETTINGS_CACHE_KEY, settingsCache || defaultSettings),
-  );
+  ));
   return settingsCache;
 }
 
@@ -714,12 +803,23 @@ export async function loginAdmin(email: string, password: string): Promise<Admin
     expiresAt: Date.now() + Math.max(0, data.expires_in - 60) * 1000,
     email: data.user?.email || email,
   };
-  writeStorage(ADMIN_SESSION_KEY, session);
+  adminSessionCache = session;
+  clearLegacyAdminSessionStorage();
   return session;
 }
 
 export function logoutAdmin(): void {
-  localStorage.removeItem(ADMIN_SESSION_KEY);
+  adminSessionCache = null;
+  clearLegacyAdminSessionStorage();
+}
+
+function clearLegacyAdminSessionStorage(): void {
+  try {
+    localStorage.removeItem(ADMIN_SESSION_KEY);
+    sessionStorage.removeItem(ADMIN_SESSION_KEY);
+  } catch {
+    // Se o navegador bloquear storage, a sessao em memoria continua sendo a fonte.
+  }
 }
 
 export async function createProduct(product: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>): Promise<Product> {
@@ -965,12 +1065,19 @@ async function compressImage(file: File): Promise<Blob> {
   });
 }
 
-export async function uploadCatalogImage(file: File, folder: 'products' | 'categories' | 'site' = 'products'): Promise<string> {
+function validateOriginalImage(file: File): File {
+  const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+  if (!allowedTypes.has(file.type)) throw new Error('Envie apenas imagens JPG, PNG ou WEBP.');
+  if (file.size > 5 * 1024 * 1024) throw new Error('A imagem deve ter no mÃƒÂ¡ximo 5MB.');
+  return file;
+}
+
+export async function uploadCatalogImage(file: File, folder: 'products' | 'categories' | 'site' = 'products', options: { preserveOriginal?: boolean } = {}): Promise<string> {
   if (!hasSupabaseConfig()) throw new Error('Configure o Supabase Storage antes de subir imagens.');
   const session = getSession();
   if (!session) throw new Error('SessÃ£o expirada. FaÃ§a login novamente.');
-  const blob = await compressImage(file);
-  const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+  const blob = options.preserveOriginal ? validateOriginalImage(file) : await compressImage(file);
+  const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
   const safeName = file.name.replace(/[^a-z0-9.]+/gi, '-').toLowerCase().slice(0, 60);
   const path = `${folder}/${Date.now()}-${crypto.randomUUID()}-${safeName}.${ext}`;
   const response = await fetch(`${SUPABASE_URL}/storage/v1/object/product-images/${path}`, {

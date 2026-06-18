@@ -50,6 +50,17 @@ export interface SiteSettings {
   heroItalicTitle: string;
   heroSubtitle: string;
   heroImage: string;
+  heroImageMobile: string;
+  heroImageDesktop: string;
+  heroTitleLine1: string;
+  heroTitleLine2: string;
+  heroSubtitleLine1: string;
+  heroSubtitleLine2: string;
+  heroButtonText: string;
+  heroTopbarText1: string;
+  heroTopbarText2: string;
+  heroTopbarText3: string;
+  homeBanners: HomeBanner[];
   aboutEyebrow: string;
   aboutTitle: string;
   aboutItalicWord: string;
@@ -65,6 +76,13 @@ export interface SiteSettings {
   weekHours: string;
   saturdayHours: string;
   footerNote: string;
+}
+
+export interface HomeBanner {
+  id: string;
+  mobile: string;
+  desktop: string;
+  link?: string;
 }
 
 export interface CartItem {

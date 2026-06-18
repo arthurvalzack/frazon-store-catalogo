@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BarChart3, Boxes, Camera, Edit2, Image, ListOrdered, LogOut, Package, Plus, Save, Settings, Trash2, Upload, X, type LucideIcon } from 'lucide-react';
-import type { AdminSession, Category, Order, Product, ProductBadge, ProductVariant, SiteSettings } from '@/types';
+import type { AdminSession, Category, HomeBanner, Order, Product, ProductBadge, ProductVariant, SiteSettings } from '@/types';
 import { PRODUCT_COLORS, SIZES } from '@/types';
 import { cn } from '@/utils/cn';
 import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, saveSettings, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
@@ -187,7 +187,7 @@ export default function Admin() {
     }
   }
 
-  async function handleSingleImage(file: File | undefined, type: 'category' | 'hero' | 'editorial') {
+  async function handleSingleImage(file: File | undefined, type: 'category' | 'hero' | 'heroMobile' | 'heroDesktop' | 'editorial') {
     if (!file) return;
     setLoading(true);
     try {
@@ -195,10 +195,26 @@ export default function Admin() {
       const url = await uploadCatalogImage(file, folder);
       if (type === 'category') setCategoryForm(prev => ({ ...prev, imageUrl: url }));
       if (type === 'hero') setSettings(prev => ({ ...prev, heroImage: url }));
+      if (type === 'heroMobile') setSettings(prev => ({ ...prev, heroImageMobile: url }));
+      if (type === 'heroDesktop') setSettings(prev => ({ ...prev, heroImageDesktop: url }));
       if (type === 'editorial') setSettings(prev => ({ ...prev, editorialImage: url }));
       showToast('Imagem enviada.');
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : 'Erro ao enviar imagem.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleHomeBannerImage(file: File | undefined, index: number, field: 'mobile' | 'desktop') {
+    if (!file) return;
+    setLoading(true);
+    try {
+      const url = await uploadCatalogImage(file, 'site', { preserveOriginal: true });
+      setSettings(prev => updateHomeBanner(prev, index, field, url));
+      showToast('Banner enviado.');
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : 'Erro ao enviar banner.');
     } finally {
       setLoading(false);
     }
@@ -318,7 +334,7 @@ export default function Admin() {
     setLoading(true);
     setError('');
     try {
-      const saved = await saveSettings(settings);
+      const saved = await saveSettings(sanitizeSettingsForSave(settings));
       setSettings(saved);
       showToast('Site atualizado.');
     } catch (saveError) {
@@ -496,7 +512,7 @@ export default function Admin() {
         )}
 
         {tab === 'site' && (
-          <SiteEditor settings={settings} setSettings={setSettings} onSave={handleSaveSettings} onImage={handleSingleImage} loading={loading} />
+          <SiteEditor settings={settings} setSettings={setSettings} onSave={handleSaveSettings} onImage={handleSingleImage} onHomeBannerImage={handleHomeBannerImage} loading={loading} />
         )}
 
         {tab === 'orders' && (
@@ -528,6 +544,72 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const inputClass = 'w-full rounded-lg border border-noir-200 px-3 py-2.5 text-sm text-noir-900 focus:border-noir-500 focus:outline-none';
+
+function ensureHomeBanners(banners: HomeBanner[]): HomeBanner[] {
+  const next = banners.slice(0, 4);
+  while (next.length < 4) {
+    next.push({ id: `banner_${next.length + 1}`, mobile: '', desktop: '', link: '' });
+  }
+  return next.map((banner, index) => ({
+    id: banner.id || `banner_${index + 1}`,
+    mobile: banner.mobile || '',
+    desktop: banner.desktop || '',
+    link: banner.link || '',
+  }));
+}
+
+function updateHomeBanner(settings: SiteSettings, index: number, field: 'mobile' | 'desktop' | 'link', value: string): SiteSettings {
+  const banners = ensureHomeBanners(settings.homeBanners);
+  banners[index] = { ...banners[index], [field]: field === 'link' ? sanitizeAdminBannerLinkDraft(value) : sanitizeAdminImageUrl(value) };
+  return { ...settings, homeBanners: banners };
+}
+
+function removeHomeBanner(settings: SiteSettings, index: number): SiteSettings {
+  const banners = ensureHomeBanners(settings.homeBanners);
+  banners[index] = { ...banners[index], mobile: '', desktop: '', link: '' };
+  return { ...settings, homeBanners: banners };
+}
+
+function sanitizeAdminImageUrl(value: string): string {
+  const url = value.trim();
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:')) return '';
+  if (url.length > 2048) return '';
+  return url;
+}
+
+function sanitizeAdminBannerLink(value: string): string {
+  const url = value.trim();
+  if (!url) return '';
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (url.length > 2048) return '';
+  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url;
+  return '';
+}
+
+function sanitizeAdminBannerLinkDraft(value: string): string {
+  const lower = value.trimStart().slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (value.length > 2048) return value.slice(0, 2048);
+  return value;
+}
+
+function sanitizeSettingsForSave(settings: SiteSettings): SiteSettings {
+  return {
+    ...settings,
+    heroImage: sanitizeAdminImageUrl(settings.heroImage),
+    heroImageMobile: sanitizeAdminImageUrl(settings.heroImageMobile),
+    heroImageDesktop: sanitizeAdminImageUrl(settings.heroImageDesktop),
+    editorialImage: sanitizeAdminImageUrl(settings.editorialImage),
+    homeBanners: ensureHomeBanners(settings.homeBanners).map((banner, index) => ({
+      id: banner.id || `banner_${index + 1}`,
+      mobile: sanitizeAdminImageUrl(banner.mobile),
+      desktop: sanitizeAdminImageUrl(banner.desktop),
+      link: sanitizeAdminBannerLink(banner.link || ''),
+    })),
+  };
+}
 
 function ProductEditor({ form, categories, setForm, onCancel, onSave, addVariant, updateVariant, removeVariant, onImages, loading }: {
   form: ProductForm;
@@ -619,11 +701,185 @@ function CategoryCard({ category, onEdit, onDelete }: { category: Category; onEd
   return <div className="overflow-hidden rounded-lg border border-noir-100"><div className="aspect-[4/3] bg-noir-100"><img src={category.imageUrl} alt={category.name} className="h-full w-full object-cover" /></div><div className="p-4"><h3 className="font-semibold text-noir-900">{category.name}</h3><p className="text-xs text-noir-400">Ordem {category.sortOrder} · {category.isActive ? 'Ativa' : 'Inativa'}</p><div className="mt-3 flex gap-2"><button onClick={onEdit} className="flex-1 border border-noir-200 px-3 py-2 text-xs text-noir-600">Editar</button><button onClick={onDelete} className="border border-red-200 px-3 py-2 text-xs text-red-600">Excluir</button></div></div></div>;
 }
 
-function SiteEditor({ settings, setSettings, onSave, onImage, loading }: { settings: SiteSettings; setSettings: React.Dispatch<React.SetStateAction<SiteSettings>>; onSave: () => void; onImage: (file: File | undefined, type: 'category' | 'hero' | 'editorial') => void; loading: boolean }) {
+function SiteEditor({
+  settings,
+  setSettings,
+  onSave,
+  onImage,
+  onHomeBannerImage,
+  loading,
+}: {
+  settings: SiteSettings;
+  setSettings: React.Dispatch<React.SetStateAction<SiteSettings>>;
+  onSave: () => void;
+  onImage: (file: File | undefined, type: 'category' | 'hero' | 'heroMobile' | 'heroDesktop' | 'editorial') => void;
+  onHomeBannerImage: (file: File | undefined, index: number, field: 'mobile' | 'desktop') => void;
+  loading: boolean;
+}) {
   const set = (field: keyof SiteSettings, value: string) => setSettings(prev => ({ ...prev, [field]: value }));
-  return <section className="rounded-xl border border-noir-100 bg-white p-4 sm:p-6"><div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-lg font-semibold text-noir-900">Editar site inteiro</h2><p className="text-sm text-noir-400">Nome, WhatsApp, textos, banners e contato.</p></div><button onClick={onSave} disabled={loading} className="flex items-center justify-center gap-2 bg-noir-900 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-white disabled:opacity-50"><Save className="h-4 w-4" /> Salvar site</button></div><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><Field label="Nome da loja"><input value={settings.storeName} onChange={event => set('storeName', event.target.value)} className={inputClass} /></Field><Field label="WhatsApp"><input value={settings.whatsappNumber} onChange={event => set('whatsappNumber', event.target.value)} className={inputClass} /></Field><Field label="Instagram URL"><input value={settings.instagramUrl} onChange={event => set('instagramUrl', event.target.value)} className={inputClass} /></Field><Field label="E-mail"><input value={settings.email} onChange={event => set('email', event.target.value)} className={inputClass} /></Field><Field label="Endereço"><input value={settings.address} onChange={event => set('address', event.target.value)} className={inputClass} /></Field><Field label="Horário semana"><input value={settings.weekHours} onChange={event => set('weekHours', event.target.value)} className={inputClass} /></Field><Field label="Horário sábado"><input value={settings.saturdayHours} onChange={event => set('saturdayHours', event.target.value)} className={inputClass} /></Field><Field label="Nota rodapé"><input value={settings.footerNote} onChange={event => set('footerNote', event.target.value)} className={inputClass} /></Field><div className="md:col-span-2"><h3 className="mb-3 mt-3 text-sm font-semibold text-noir-900">Banner principal</h3></div><Field label="Texto pequeno"><input value={settings.heroEyebrow} onChange={event => set('heroEyebrow', event.target.value)} className={inputClass} /></Field><Field label="Título"><input value={settings.heroTitle} onChange={event => set('heroTitle', event.target.value)} className={inputClass} /></Field><Field label="Título itálico"><input value={settings.heroItalicTitle} onChange={event => set('heroItalicTitle', event.target.value)} className={inputClass} /></Field><Field label="Imagem hero"><ImageInput value={settings.heroImage} onChange={value => set('heroImage', value)} onFile={file => onImage(file, 'hero')} /></Field><div className="md:col-span-2"><Field label="Subtítulo"><textarea value={settings.heroSubtitle} onChange={event => set('heroSubtitle', event.target.value)} className={inputClass} rows={3} /></Field></div><div className="md:col-span-2"><h3 className="mb-3 mt-3 text-sm font-semibold text-noir-900">Sobre</h3></div><Field label="Texto pequeno"><input value={settings.aboutEyebrow} onChange={event => set('aboutEyebrow', event.target.value)} className={inputClass} /></Field><Field label="Título"><input value={settings.aboutTitle} onChange={event => set('aboutTitle', event.target.value)} className={inputClass} /></Field><Field label="Palavra destaque"><input value={settings.aboutItalicWord} onChange={event => set('aboutItalicWord', event.target.value)} className={inputClass} /></Field><div className="md:col-span-2"><Field label="Texto sobre"><textarea value={settings.aboutText} onChange={event => set('aboutText', event.target.value)} className={inputClass} rows={3} /></Field></div><div className="md:col-span-2"><h3 className="mb-3 mt-3 text-sm font-semibold text-noir-900">Banner editorial</h3></div><Field label="Texto pequeno"><input value={settings.editorialEyebrow} onChange={event => set('editorialEyebrow', event.target.value)} className={inputClass} /></Field><Field label="Título"><input value={settings.editorialTitle} onChange={event => set('editorialTitle', event.target.value)} className={inputClass} /></Field><Field label="Título itálico"><input value={settings.editorialItalicTitle} onChange={event => set('editorialItalicTitle', event.target.value)} className={inputClass} /></Field><Field label="Imagem editorial"><ImageInput value={settings.editorialImage} onChange={value => set('editorialImage', value)} onFile={file => onImage(file, 'editorial')} /></Field><div className="md:col-span-2"><Field label="Texto editorial"><textarea value={settings.editorialText} onChange={event => set('editorialText', event.target.value)} className={inputClass} rows={3} /></Field></div></div></section>;
+  const homeBanners = ensureHomeBanners(settings.homeBanners);
+
+  return (
+    <section className="rounded-xl border border-noir-100 bg-white p-4 sm:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-noir-900">Editar site inteiro</h2>
+          <p className="text-sm text-noir-400">Nome, WhatsApp, textos, banners e contato.</p>
+        </div>
+        <button onClick={onSave} disabled={loading} className="flex items-center justify-center gap-2 bg-noir-900 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-white disabled:opacity-50">
+          <Save className="h-4 w-4" /> Salvar site
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Field label="Nome da loja"><input value={settings.storeName} onChange={event => set('storeName', event.target.value)} className={inputClass} /></Field>
+        <Field label="WhatsApp"><input value={settings.whatsappNumber} onChange={event => set('whatsappNumber', event.target.value)} className={inputClass} /></Field>
+        <Field label="Instagram URL"><input value={settings.instagramUrl} onChange={event => set('instagramUrl', event.target.value)} className={inputClass} /></Field>
+        <Field label="E-mail"><input value={settings.email} onChange={event => set('email', event.target.value)} className={inputClass} /></Field>
+        <Field label="Endereço"><input value={settings.address} onChange={event => set('address', event.target.value)} className={inputClass} /></Field>
+        <Field label="Horário semana"><input value={settings.weekHours} onChange={event => set('weekHours', event.target.value)} className={inputClass} /></Field>
+        <Field label="Horário sábado"><input value={settings.saturdayHours} onChange={event => set('saturdayHours', event.target.value)} className={inputClass} /></Field>
+        <Field label="Nota rodapé"><input value={settings.footerNote} onChange={event => set('footerNote', event.target.value)} className={inputClass} /></Field>
+
+        <div className="md:col-span-2">
+          <h3 className="mb-2 mt-3 text-sm font-semibold text-noir-900">Banners da Home</h3>
+          <p className="text-xs text-noir-400">Cadastre até 4 banners. Cada banner pode ter uma imagem para celular e uma imagem para computador. O site escolhe automaticamente a imagem certa conforme o dispositivo.</p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:col-span-2 lg:grid-cols-2">
+          {homeBanners.map((banner, index) => (
+            <HomeBannerCard
+              key={banner.id}
+              banner={banner}
+              index={index}
+              onChange={(field, value) => setSettings(prev => updateHomeBanner(prev, index, field, value))}
+              onFile={(field, file) => onHomeBannerImage(file, index, field)}
+              onRemoveImage={field => setSettings(prev => updateHomeBanner(prev, index, field, ''))}
+              onRemoveBanner={() => setSettings(prev => removeHomeBanner(prev, index))}
+            />
+          ))}
+        </div>
+
+        <Field label="Texto do botão do banner"><input value={settings.heroButtonText} onChange={event => set('heroButtonText', event.target.value)} className={inputClass} /></Field>
+        <div className="md:col-span-2">
+          <h4 className="mb-2 mt-3 text-xs font-semibold uppercase tracking-wider text-noir-500">Barra superior do banner</h4>
+        </div>
+        <Field label="Texto 1"><input value={settings.heroTopbarText1} onChange={event => set('heroTopbarText1', event.target.value)} className={inputClass} /></Field>
+        <Field label="Texto 2"><input value={settings.heroTopbarText2} onChange={event => set('heroTopbarText2', event.target.value)} className={inputClass} /></Field>
+        <Field label="Texto 3"><input value={settings.heroTopbarText3} onChange={event => set('heroTopbarText3', event.target.value)} className={inputClass} /></Field>
+
+        <div className="md:col-span-2"><h3 className="mb-3 mt-3 text-sm font-semibold text-noir-900">Sobre</h3></div>
+        <Field label="Texto pequeno"><input value={settings.aboutEyebrow} onChange={event => set('aboutEyebrow', event.target.value)} className={inputClass} /></Field>
+        <Field label="Título"><input value={settings.aboutTitle} onChange={event => set('aboutTitle', event.target.value)} className={inputClass} /></Field>
+        <Field label="Palavra destaque"><input value={settings.aboutItalicWord} onChange={event => set('aboutItalicWord', event.target.value)} className={inputClass} /></Field>
+        <div className="md:col-span-2"><Field label="Texto sobre"><textarea value={settings.aboutText} onChange={event => set('aboutText', event.target.value)} className={inputClass} rows={3} /></Field></div>
+
+        <div className="md:col-span-2"><h3 className="mb-3 mt-3 text-sm font-semibold text-noir-900">Banner editorial</h3></div>
+        <Field label="Texto pequeno"><input value={settings.editorialEyebrow} onChange={event => set('editorialEyebrow', event.target.value)} className={inputClass} /></Field>
+        <Field label="Título"><input value={settings.editorialTitle} onChange={event => set('editorialTitle', event.target.value)} className={inputClass} /></Field>
+        <Field label="Título itálico"><input value={settings.editorialItalicTitle} onChange={event => set('editorialItalicTitle', event.target.value)} className={inputClass} /></Field>
+        <Field label="Imagem editorial"><ImageInput value={settings.editorialImage} onChange={value => set('editorialImage', value)} onFile={file => onImage(file, 'editorial')} /></Field>
+        <div className="md:col-span-2"><Field label="Texto editorial"><textarea value={settings.editorialText} onChange={event => set('editorialText', event.target.value)} className={inputClass} rows={3} /></Field></div>
+      </div>
+    </section>
+  );
 }
 
+function HomeBannerCard({
+  banner,
+  index,
+  onChange,
+  onFile,
+  onRemoveImage,
+  onRemoveBanner,
+}: {
+  banner: HomeBanner;
+  index: number;
+  onChange: (field: 'mobile' | 'desktop' | 'link', value: string) => void;
+  onFile: (field: 'mobile' | 'desktop', file: File | undefined) => void;
+  onRemoveImage: (field: 'mobile' | 'desktop') => void;
+  onRemoveBanner: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-noir-100 bg-noir-50 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-noir-900">Banner {index + 1}</p>
+          <p className="text-xs text-noir-400">Imagens independentes para celular e computador.</p>
+        </div>
+        <button type="button" onClick={onRemoveBanner} className="border border-red-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-red-600">Remover banner</button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <BannerImageInput
+          title="Imagem Mobile"
+          help="Imagem vertical para celular. Tamanho recomendado: 1080 x 1920 px. Formato recomendado: WebP, JPG ou PNG. Peso ideal: até 800 KB / máximo 2 MB."
+          value={banner.mobile}
+          onChange={value => onChange('mobile', value)}
+          onFile={file => onFile('mobile', file)}
+          onRemove={() => onRemoveImage('mobile')}
+          aspect="aspect-[9/16]"
+        />
+        <BannerImageInput
+          title="Imagem Desktop / PC"
+          help="Imagem horizontal para computador. Tamanho recomendado: 2560 x 1200 px. Qualidade premium: 3000 x 1400 px. Formato recomendado: WebP, JPG ou PNG. Peso ideal: até 1,5 MB / máximo 4 MB."
+          value={banner.desktop}
+          onChange={value => onChange('desktop', value)}
+          onFile={file => onFile('desktop', file)}
+          onRemove={() => onRemoveImage('desktop')}
+          aspect="aspect-[16/7]"
+        />
+      </div>
+
+      {index > 0 && (
+        <div className="mt-3 rounded border border-noir-100 bg-white p-3">
+          <Field label="Link do banner">
+            <input value={banner.link || ''} onChange={event => onChange('link', event.target.value)} className={inputClass} placeholder="Ex: /catalog, #catalogo ou https://instagram.com/..." />
+          </Field>
+          <p className="mt-2 text-[11px] leading-relaxed text-noir-400">
+            Opcional. Se preencher, o cliente poderÃ¡ clicar no banner inteiro. Use link interno do site ou link externo como Instagram, WhatsApp ou promoÃ§Ã£o.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BannerImageInput({
+  title,
+  help,
+  value,
+  onChange,
+  onFile,
+  onRemove,
+  aspect,
+}: {
+  title: string;
+  help: string;
+  value: string;
+  onChange: (value: string) => void;
+  onFile: (file: File | undefined) => void;
+  onRemove: () => void;
+  aspect: string;
+}) {
+  return (
+    <div className="rounded border border-noir-100 bg-white p-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-noir-600">{title}</p>
+      <p className="mt-1 min-h-[48px] text-[11px] leading-relaxed text-noir-400">{help}</p>
+      <div className={`mt-3 overflow-hidden rounded bg-noir-100 ${aspect}`}>
+        {value ? <img src={value} alt={title} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[11px] uppercase tracking-wider text-noir-300">Sem imagem</div>}
+      </div>
+      <div className="mt-3 flex gap-2">
+        <input value={value} onChange={event => onChange(event.target.value)} className={inputClass} placeholder="URL da imagem" />
+        <label className="flex cursor-pointer items-center gap-2 bg-noir-900 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white">
+          <Image className="h-4 w-4" />
+          <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={event => { onFile(event.target.files?.[0]); event.currentTarget.value = ''; }} />
+        </label>
+      </div>
+      <button type="button" onClick={onRemove} className="mt-2 border border-noir-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-noir-600">Remover imagem</button>
+    </div>
+  );
+}
 function ImageInput({ value, onChange, onFile }: { value: string; onChange: (value: string) => void; onFile: (file: File | undefined) => void }) {
   return <div className="flex gap-2"><input value={value} onChange={event => onChange(event.target.value)} className={inputClass} /><label className="flex cursor-pointer items-center gap-2 bg-noir-900 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white"><Image className="h-4 w-4" /><input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={event => onFile(event.target.files?.[0])} /></label></div>;
 }
