@@ -1,4 +1,4 @@
-import type { AdminSession, CartItem, Category, HomeBanner, Order, OrderItem, Product, ProductBadge, ProductColor, ProductVariant, SiteSettings } from '@/types';
+import type { AdminSession, CartItem, Category, HomeBanner, Order, OrderItem, Product, ProductBadge, ProductColor, ProductImage, ProductVariant, SiteSettings } from '@/types';
 import { INVENTORY_SYNC_WARNING, syncInventoryProduct } from '@/lib/inventorySync';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
@@ -85,7 +85,7 @@ const demoProducts: Product[] = [
       { id: 'v3', color: { name: 'Preto', hex: '#111111' }, size: 'G', stock: 3 },
       { id: 'v4', color: { name: 'Branco', hex: '#FAFAFA' }, size: 'M', stock: 5 },
     ],
-    images: [DEFAULT_HERO],
+    images: [{ url: DEFAULT_HERO, color: '' }],
     badge: 'bestseller',
     isActive: true,
     createdAt: new Date().toISOString(),
@@ -93,7 +93,7 @@ const demoProducts: Product[] = [
 ];
 
 let productsCache: Product[] = [];
-let categoriesCache: Category[] = defaultCategories;
+let categoriesCache: Category[] = hasSupabaseConfig() ? [] : defaultCategories;
 let settingsCache: SiteSettings = normalizeSettingsObject(readStorage<SiteSettings>(
   SETTINGS_CACHE_KEY,
   readStorage<SiteSettings>(LEGACY_SETTINGS_CACHE_KEY, defaultSettings),
@@ -243,7 +243,7 @@ type ProductRow = {
   colors: ProductColor[] | null;
   sizes: string[] | null;
   variants: ProductVariant[] | null;
-  images: string[] | null;
+  images: unknown[] | null;
   badge: ProductBadge | null;
   is_active: boolean | null;
   created_at: string | null;
@@ -328,7 +328,7 @@ function rowToProduct(row: ProductRow): Product {
     colors,
     sizes,
     variants,
-    images: Array.isArray(row.images) ? row.images.slice(0, 3) : [],
+    images: normalizeProductImages(row.images),
     badge: row.badge || undefined,
     isActive: row.is_active !== false,
     createdAt: row.created_at || new Date().toISOString(),
@@ -349,7 +349,7 @@ function productToRow(product: Omit<Product, 'id' | 'createdAt' | 'updatedAt'> |
   if (product.colors !== undefined) row.colors = product.colors;
   if (product.sizes !== undefined) row.sizes = product.sizes;
   if (product.variants !== undefined) row.variants = sanitizeVariants(product.variants);
-  if (product.images !== undefined) row.images = product.images.slice(0, 3).filter(Boolean);
+  if (product.images !== undefined) row.images = normalizeProductImages(product.images).slice(0, 6);
   if (product.badge !== undefined) row.badge = product.badge || null;
   if (product.isActive !== undefined) row.is_active = product.isActive;
   row.updated_at = new Date().toISOString();
@@ -414,6 +414,43 @@ function sanitizeStoredBannerLink(value: unknown): string {
   if (url.length > 2048) return '';
   if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url;
   return '';
+}
+
+function normalizeProductImages(value: unknown): ProductImage[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 6)
+    .map(item => {
+      if (typeof item === 'string') return { url: item.trim(), color: '' };
+      if (item && typeof item === 'object') {
+        const image = item as Partial<ProductImage>;
+        return {
+          url: typeof image.url === 'string' ? image.url.trim() : '',
+          color: typeof image.color === 'string' ? image.color.trim() : '',
+        };
+      }
+      return { url: '', color: '' };
+    })
+    .filter(image => image.url);
+}
+
+function normalizeColorName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function getProductImageUrl(image?: ProductImage): string {
+  return image?.url || '';
+}
+
+export function findProductImageIndexByColor(product: Product, color: string): number {
+  const target = normalizeColorName(color);
+  if (!target) return -1;
+  return product.images.findIndex(image => normalizeColorName(image.color || '') === target);
+}
+
+export function getProductImageForColor(product: Product, color: string): ProductImage | undefined {
+  const index = findProductImageIndexByColor(product, color);
+  return index >= 0 ? product.images[index] : product.images[0];
 }
 
 function rowToSettings(row?: SettingsRow): SiteSettings {
@@ -571,7 +608,7 @@ export async function loadCatalogData(force = false): Promise<{ products: Produc
   } catch (error) {
     console.error('[FRAZON CATALOG LOAD ERROR]', error);
     productsCache = readStorage<Product[]>(PRODUCT_CACHE_KEY, []);
-    categoriesCache = readStorage<Category[]>(CATEGORY_CACHE_KEY, defaultCategories);
+    categoriesCache = readStorage<Category[]>(CATEGORY_CACHE_KEY, []);
     settingsCache = normalizeSettingsObject(readStorage<SiteSettings>(SETTINGS_CACHE_KEY, defaultSettings));
   }
 
@@ -613,6 +650,151 @@ export function subscribeToProductsChanges(onProductsChange: (products: Product[
   return () => {
     productsRealtimeSubscribers.delete(onProductsChange);
     if (productsRealtimeSubscribers.size === 0) stopProductsRealtime();
+  };
+}
+
+export function subscribeToCatalogDataChanges(
+  onCatalogChange: (products: Product[], categories: Category[], settings: SiteSettings) => void,
+): () => void {
+  return subscribeToTableChanges('catalog', ['products', 'categories', 'site_settings'], async () => {
+    const data = await loadCatalogData(true);
+    onCatalogChange(data.products, data.categories, data.settings);
+  });
+}
+
+export function subscribeToOrdersChanges(onOrdersChange: (orders: Order[]) => void): () => void {
+  if (!getSession()) return () => undefined;
+
+  return subscribeToTableChanges('orders', ['orders'], async () => {
+    onOrdersChange(await listOrders());
+  });
+}
+
+function subscribeToTableChanges(name: string, tables: string[], reload: () => Promise<void>): () => void {
+  if (!hasSupabaseConfig()) return () => undefined;
+
+  let socket: WebSocket | null = null;
+  let heartbeat: number | undefined;
+  let poll: number | undefined;
+  let joinTimeout: number | undefined;
+  let ref = 1;
+  let stopped = false;
+  let fallbackEnabled = false;
+  let reloading = false;
+
+  const clearHeartbeat = () => {
+    if (!heartbeat) return;
+    window.clearInterval(heartbeat);
+    heartbeat = undefined;
+  };
+
+  const clearJoinTimeout = () => {
+    if (!joinTimeout) return;
+    window.clearTimeout(joinTimeout);
+    joinTimeout = undefined;
+  };
+
+  const runReload = async () => {
+    if (stopped || reloading) return;
+    reloading = true;
+    try {
+      await reload();
+    } catch (error) {
+      console.error(`[FRAZON ${name.toUpperCase()} REALTIME REFRESH ERROR]`, error);
+      enableFallbackPolling();
+    } finally {
+      reloading = false;
+    }
+  };
+
+  const enableFallbackPolling = () => {
+    if (stopped || fallbackEnabled || poll) return;
+    fallbackEnabled = true;
+    if (import.meta.env.DEV) console.info(`[Realtime ${name}] fallback polling enabled`);
+    void runReload();
+    poll = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void runReload();
+    }, 5_000);
+  };
+
+  const logStatus = (status: string) => {
+    if (import.meta.env.DEV) console.info(`[Realtime ${name}] status: ${status}`);
+  };
+
+  if (typeof WebSocket === 'undefined') {
+    enableFallbackPolling();
+    return () => {
+      stopped = true;
+      if (poll) window.clearInterval(poll);
+    };
+  }
+
+  const topic = `realtime:public:${name}`;
+  const realtimeUrl = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_ANON_KEY)}&vsn=1.0.0`;
+  socket = new WebSocket(realtimeUrl);
+
+  const send = (event: string, payload: Record<string, unknown>, targetTopic = topic) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ topic: targetTopic, event, payload, ref: String(ref++) }));
+  };
+
+  socket.addEventListener('open', () => {
+    const session = getSession();
+    send('phx_join', {
+      config: {
+        broadcast: { self: false },
+        presence: { key: '' },
+        postgres_changes: tables.map(table => ({ event: '*', schema: 'public', table })),
+      },
+      access_token: session?.accessToken || SUPABASE_ANON_KEY,
+    });
+    joinTimeout = window.setTimeout(() => {
+      logStatus('TIMED_OUT');
+      enableFallbackPolling();
+    }, 10_000);
+    heartbeat = window.setInterval(() => send('heartbeat', {}, 'phoenix'), 30_000);
+  });
+
+  socket.addEventListener('message', event => {
+    try {
+      const message = JSON.parse(event.data as string) as { event?: string; payload?: { status?: string }; ref?: string };
+      if (message.event === 'phx_reply' && message.ref === '1') {
+        clearJoinTimeout();
+        const status = message.payload?.status === 'ok' ? 'SUBSCRIBED' : 'CHANNEL_ERROR';
+        logStatus(status);
+        if (status !== 'SUBSCRIBED') enableFallbackPolling();
+        return;
+      }
+
+      if (message.event === 'postgres_changes') void runReload();
+    } catch (error) {
+      console.error(`[FRAZON ${name.toUpperCase()} REALTIME ERROR]`, error);
+      enableFallbackPolling();
+    }
+  });
+
+  socket.addEventListener('error', () => {
+    logStatus('CHANNEL_ERROR');
+    enableFallbackPolling();
+  });
+
+  socket.addEventListener('close', () => {
+    clearHeartbeat();
+    clearJoinTimeout();
+    if (!stopped) {
+      logStatus('CLOSED');
+      enableFallbackPolling();
+    }
+  });
+
+  return () => {
+    stopped = true;
+    clearHeartbeat();
+    clearJoinTimeout();
+    if (poll) window.clearInterval(poll);
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) socket.close();
+    socket = null;
   };
 }
 
@@ -769,7 +951,7 @@ export async function getProductBySlug(slug: string): Promise<Product | undefine
 }
 
 export function getCategories(): Category[] {
-  return categoriesCache.length ? categoriesCache : readStorage<Category[]>(CATEGORY_CACHE_KEY, defaultCategories);
+  return categoriesCache.length ? categoriesCache : readStorage<Category[]>(CATEGORY_CACHE_KEY, hasSupabaseConfig() ? [] : defaultCategories);
 }
 
 export function getActiveCategories(): Category[] {
@@ -863,8 +1045,9 @@ async function trySyncInventoryProduct(product: Product): Promise<void> {
   try {
     await syncInventoryProduct(product, session.accessToken);
   } catch (error) {
-    console.error('[FRAZON INVENTORY SYNC ERROR]', error);
-    inventorySyncWarning = INVENTORY_SYNC_WARNING;
+    console.error('[INVENTORY PRODUCT SYNC ERROR]', error);
+    const details = error instanceof Error ? error.message : '';
+    inventorySyncWarning = details ? `${INVENTORY_SYNC_WARNING} ${details}` : INVENTORY_SYNC_WARNING;
   }
 }
 
@@ -960,7 +1143,7 @@ export async function createOrder(
       quantity: item.quantity,
       unitPrice,
       subtotal: unitPrice * item.quantity,
-      image: product?.images[0],
+      image: getProductImageUrl(product?.images[0]),
     };
   }).filter(item => item.unitPrice > 0);
 

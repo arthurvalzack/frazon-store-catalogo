@@ -12,6 +12,11 @@ export interface ProductVariant {
   stock: number;
 }
 
+export interface ProductImage {
+  url: string;
+  color?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -25,7 +30,7 @@ export interface Product {
   colors: ProductColor[];
   sizes: string[];
   variants: ProductVariant[];
-  images: string[];
+  images: ProductImage[];
   badge?: ProductBadge;
   isActive: boolean;
   createdAt: string;

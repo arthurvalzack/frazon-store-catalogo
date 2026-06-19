@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BarChart3, Boxes, Camera, Edit2, Image, ListOrdered, LogOut, Package, Plus, Save, Settings, Trash2, Upload, X, type LucideIcon } from 'lucide-react';
-import type { AdminSession, Category, HomeBanner, Order, Product, ProductBadge, ProductVariant, SiteSettings } from '@/types';
+import type { AdminSession, Category, HomeBanner, Order, Product, ProductBadge, ProductImage, ProductVariant, SiteSettings } from '@/types';
 import { PRODUCT_COLORS, SIZES } from '@/types';
 import { cn } from '@/utils/cn';
-import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, saveSettings, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
+import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getProductImageUrl, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, saveSettings, subscribeToOrdersChanges, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
+import { syncAllInventoryProducts, type InventoryBulkSyncResult } from '@/lib/inventorySync';
 
 type AdminTab = 'products' | 'categories' | 'site' | 'orders';
 
@@ -16,7 +17,7 @@ type ProductForm = {
   description: string;
   price: string;
   originalPrice: string;
-  images: string[];
+  images: ProductImage[];
   badge: '' | ProductBadge;
   isActive: boolean;
   variants: ProductVariant[];
@@ -50,6 +51,10 @@ const emptyCategoryForm: CategoryForm = {
   sortOrder: '1',
 };
 
+function getProductVariantStock(product: Product): number {
+  return product.variants.reduce((sum, variant) => sum + Math.max(0, Number(variant.stock) || 0), 0);
+}
+
 export default function Admin() {
   const [session, setSession] = useState<AdminSession | null>(getAdminSession());
   const [tab, setTab] = useState<AdminTab>('products');
@@ -64,8 +69,12 @@ export default function Admin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [inventorySyncing, setInventorySyncing] = useState(false);
+  const [inventorySyncResult, setInventorySyncResult] = useState<InventoryBulkSyncResult | null>(null);
+  const [inventorySyncMessage, setInventorySyncMessage] = useState('');
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
+  const autoInventorySyncRan = useRef(false);
 
   const configured = isSupabaseConfigured();
 
@@ -81,6 +90,50 @@ export default function Admin() {
     if (!session) return undefined;
     return subscribeToProductsChanges(handleProductsRealtimeChange);
   }, [handleProductsRealtimeChange, session]);
+
+  useEffect(() => {
+    if (!session) return undefined;
+    return subscribeToOrdersChanges(nextOrders => setOrders(nextOrders));
+  }, [session]);
+
+  const runInventorySync = useCallback(async (source: 'auto' | 'manual') => {
+    if (!session || inventorySyncing) return;
+    if (!products.length) {
+      setInventorySyncMessage('Nenhum produto para sincronizar.');
+      return;
+    }
+
+    setInventorySyncing(true);
+    setInventorySyncMessage('Sincronizando catálogo com inventário...');
+    console.info('[INVENTORY BULK SYNC START]', { source, total: products.length });
+
+    try {
+      const result = await syncAllInventoryProducts(products, session.accessToken);
+      setInventorySyncResult(result);
+      const message = `Sincronização concluída: ${result.total} produtos verificados, ${result.success} sincronizados, ${result.failed} falhas.`;
+      setInventorySyncMessage(message);
+      console.info('[INVENTORY BULK SYNC RESULT]', result);
+      if (result.failed > 0) {
+        setError(`Sincronização com inventário concluiu com ${result.failed} falha(s). Veja o console para detalhes.`);
+      } else if (source === 'manual') {
+        showToast('Inventário sincronizado.');
+      }
+    } catch (syncError) {
+      console.error('[INVENTORY BULK SYNC ERROR]', syncError);
+      const message = syncError instanceof Error ? syncError.message : 'Erro ao sincronizar inventário.';
+      setInventorySyncMessage(message);
+      setError(message);
+    } finally {
+      setInventorySyncing(false);
+    }
+  }, [inventorySyncing, products, session]);
+
+  useEffect(() => {
+    if (!session || autoInventorySyncRan.current || inventorySyncing || !products.length) return undefined;
+    autoInventorySyncRan.current = true;
+    void runInventorySync('auto');
+    return undefined;
+  }, [inventorySyncing, products.length, runInventorySync, session]);
 
   async function refreshData() {
     setLoading(true);
@@ -141,7 +194,7 @@ export default function Admin() {
       description: product.description,
       price: String(product.price),
       originalPrice: product.originalPrice ? String(product.originalPrice) : '',
-      images: product.images.slice(0, 3),
+      images: product.images.slice(0, 6),
       badge: product.badge || '',
       isActive: product.isActive,
       variants: product.variants.length ? product.variants : [{ id: crypto.randomUUID(), color: product.colors[0] || PRODUCT_COLORS[0], size: product.sizes[0] || 'M', stock: 1 }],
@@ -169,16 +222,20 @@ export default function Admin() {
 
   async function handleProductImages(files: FileList | null) {
     if (!files?.length) return;
-    const availableSlots = 3 - productForm.images.length;
+    const availableSlots = 6 - productForm.images.length;
     if (availableSlots <= 0) {
-      showToast('Limite de 3 fotos por produto.');
+      showToast('Limite de 6 fotos por produto.');
       return;
     }
     setLoading(true);
     try {
-      const selectedFiles = Array.from(files).slice(0, availableSlots);
+      const selectedFiles = Array.from(files);
+      if (selectedFiles.length > availableSlots) {
+        showToast('Limite de 6 fotos por produto.');
+        return;
+      }
       const urls = await Promise.all(selectedFiles.map(file => uploadCatalogImage(file, 'products')));
-      setProductForm(prev => ({ ...prev, images: [...prev.images, ...urls].slice(0, 3) }));
+      setProductForm(prev => ({ ...prev, images: [...prev.images, ...urls.map(url => ({ url, color: '' }))].slice(0, 6) }));
       showToast('Imagem enviada.');
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : 'Erro ao enviar imagem.');
@@ -244,7 +301,7 @@ export default function Admin() {
       description: productForm.description.trim(),
       price: Number(productForm.price),
       originalPrice: productForm.originalPrice ? Number(productForm.originalPrice) : undefined,
-      images: productForm.images.slice(0, 3),
+      images: productForm.images.slice(0, 6),
       badge: productForm.badge || undefined,
       isActive: productForm.isActive,
       colors,
@@ -395,10 +452,10 @@ export default function Admin() {
 
   const stats = useMemo(() => {
     const active = products.filter(product => product.isActive).length;
-    const stock = products.reduce((sum, product) => sum + product.variants.reduce((total, variant) => total + Math.max(0, Number(variant.stock) || 0), 0), 0);
-    const revenue = orders.reduce((sum, order) => sum + order.subtotal, 0);
-    return { active, stock, revenue };
-  }, [orders, products]);
+    const stock = products.reduce((sum, product) => sum + getProductVariantStock(product), 0);
+    const stockValue = products.reduce((sum, product) => sum + getProductVariantStock(product) * (Number(product.price) || 0), 0);
+    return { active, stock, stockValue };
+  }, [products]);
 
   if (!session) {
     return (
@@ -442,7 +499,31 @@ export default function Admin() {
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <StatCard icon={Package} label="Produtos ativos" value={String(stats.active)} />
           <StatCard icon={Boxes} label="Estoque total" value={String(stats.stock)} />
-          <StatCard icon={BarChart3} label="Pedidos salvos" value={formatPrice(stats.revenue)} />
+          <StatCard icon={BarChart3} label="Valor em estoque" value={formatPrice(stats.stockValue)} />
+        </div>
+
+        <div className="mb-6 rounded-xl border border-noir-100 bg-white p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-noir-400">Sincronização de inventário</p>
+              <p className="mt-1 text-sm text-noir-700">
+                {inventorySyncMessage || 'A sincronização automática roda uma vez ao abrir o Admin.'}
+              </p>
+              {inventorySyncResult && (
+                <p className="mt-1 text-xs text-noir-400">
+                  Verificados: {inventorySyncResult.total} · Criados: {inventorySyncResult.created} · Atualizados: {inventorySyncResult.updated} · Falhas: {inventorySyncResult.failed}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => void runInventorySync('manual')}
+              disabled={inventorySyncing || loading || !products.length}
+              className="inline-flex items-center justify-center gap-2 bg-noir-900 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-white transition-colors hover:bg-noir-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Boxes className="h-4 w-4" />
+              {inventorySyncing ? 'Sincronizando...' : 'Sincronizar inventário'}
+            </button>
+          </div>
         </div>
 
         <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
@@ -637,17 +718,30 @@ function ProductEditor({ form, categories, setForm, onCancel, onSave, addVariant
 
       <div className="rounded-lg border border-noir-100 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <div><h3 className="text-sm font-semibold text-noir-900">Fotos do produto</h3><p className="text-xs text-noir-400">Até 3 imagens. O sistema comprime arquivos grandes antes do upload.</p></div>
+          <div><h3 className="text-sm font-semibold text-noir-900">Fotos do produto</h3><p className="text-xs text-noir-400">Ate 6 imagens. Informe a cor de cada foto quando quiser trocar a imagem pela cor selecionada.</p></div>
           <label className="flex cursor-pointer items-center gap-2 bg-noir-900 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white hover:bg-noir-700">
             <Upload className="h-4 w-4" /> Enviar
             <input type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={event => onImages(event.target.files)} />
           </label>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          {form.images.map((url, index) => (
-            <div key={url} className="relative aspect-square overflow-hidden rounded bg-noir-100">
-              <img src={url} alt="" className="h-full w-full object-cover" />
-              <button onClick={() => setForm(prev => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} className="absolute right-1 top-1 rounded-full bg-white/90 p-1 text-noir-700"><X className="h-3 w-3" /></button>
+          {form.images.map((image, index) => (
+            <div key={`${image.url}-${index}`} className="overflow-hidden rounded bg-noir-100">
+              <div className="relative aspect-square">
+                <img src={image.url} alt="" className="h-full w-full object-cover" />
+                <button onClick={() => setForm(prev => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} className="absolute right-1 top-1 rounded-full bg-white/90 p-1 text-noir-700"><X className="h-3 w-3" /></button>
+              </div>
+              <select
+                value={image.color || ''}
+                onChange={event => setForm(prev => ({
+                  ...prev,
+                  images: prev.images.map((item, imageIndex) => imageIndex === index ? { ...item, color: event.target.value } : item),
+                }))}
+                className="w-full border-0 bg-white px-2 py-2 text-[11px] text-noir-700 focus:outline-none"
+              >
+                <option value="">Sem cor / detalhe</option>
+                {PRODUCT_COLORS.map(color => <option key={color.name} value={color.name}>{color.name}</option>)}
+              </select>
             </div>
           ))}
           {form.images.length === 0 && <div className="col-span-3 rounded-lg bg-noir-50 p-6 text-center text-sm text-noir-400">Nenhuma imagem enviada.</div>}
@@ -690,7 +784,8 @@ function ProductEditor({ form, categories, setForm, onCancel, onSave, addVariant
 
 function ProductRow({ product, onEdit, onDelete }: { product: Product; onEdit: () => void; onDelete: () => void }) {
   const totalStock = product.variants.reduce((sum, variant) => sum + Math.max(0, Number(variant.stock) || 0), 0);
-  return <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="h-16 w-12 overflow-hidden rounded bg-noir-100"><img src={product.images[0] || ''} alt="" className="h-full w-full object-cover" /></div><div><h3 className="text-sm font-semibold text-noir-900">{product.name}</h3><p className="text-xs text-noir-400">{product.category} · {formatPrice(product.price)} · estoque {totalStock}</p><p className={cn('mt-1 text-[11px] font-semibold uppercase tracking-wider', product.isActive ? 'text-emerald-600' : 'text-noir-300')}>{product.isActive ? 'Ativo' : 'Inativo'}</p></div></div><div className="flex gap-2"><button onClick={onEdit} className="flex items-center gap-1 border border-noir-200 px-3 py-2 text-xs text-noir-600 hover:border-noir-900"><Edit2 className="h-3.5 w-3.5" /> Editar</button><button onClick={onDelete} className="flex items-center gap-1 border border-red-200 px-3 py-2 text-xs text-red-600 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /> Excluir</button></div></div>;
+  const stockValue = totalStock * (Number(product.price) || 0);
+  return <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="h-16 w-12 overflow-hidden rounded bg-noir-100"><img src={getProductImageUrl(product.images[0])} alt="" className="h-full w-full object-cover" /></div><div><h3 className="text-sm font-semibold text-noir-900">{product.name}</h3><p className="text-xs text-noir-400">{product.category} · {formatPrice(product.price)} · estoque {totalStock} · valor {formatPrice(stockValue)}</p><p className={cn('mt-1 text-[11px] font-semibold uppercase tracking-wider', product.isActive ? 'text-emerald-600' : 'text-noir-300')}>{product.isActive ? 'Ativo' : 'Inativo'}</p></div></div><div className="flex gap-2"><button onClick={onEdit} className="flex items-center gap-1 border border-noir-200 px-3 py-2 text-xs text-noir-600 hover:border-noir-900"><Edit2 className="h-3.5 w-3.5" /> Editar</button><button onClick={onDelete} className="flex items-center gap-1 border border-red-200 px-3 py-2 text-xs text-red-600 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /> Excluir</button></div></div>;
 }
 
 function CategoryEditor({ form, setForm, onCancel, onSave, onImage, loading }: { form: CategoryForm; setForm: React.Dispatch<React.SetStateAction<CategoryForm>>; onCancel: () => void; onSave: () => void; onImage: (file: File | undefined) => void; loading: boolean }) {

@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import { useCart } from '@/context/CartContext';
-import { fallbackImage, formatPrice, getProductById, getVariantStock } from '@/lib/data';
+import { fallbackImage, formatPrice, getProductById, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
 
 export default function CartSidebar() {
   const { items, isOpen, closeCart, updateQuantity, removeItem, totalItems, totalPrice, sendToWhatsApp, isSending, cartError } = useCart();
@@ -58,7 +58,7 @@ export default function CartSidebar() {
                     return (
                       <div key={`${item.productId}-${item.color}-${item.size}`} className="flex gap-4 px-5 py-4 sm:px-6">
                         <div className="h-24 w-20 shrink-0 overflow-hidden rounded-sm bg-noir-100">
-                          <img src={fallbackImage(product.images[0])} alt={product.name} className="h-full w-full object-cover" loading="lazy" />
+                          <img src={fallbackImage(getProductImageUrl(getProductImageForColor(product, item.color)))} alt={product.name} className="h-full w-full object-cover" loading="lazy" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <h3 className="line-clamp-2 text-sm font-medium text-noir-900">{product.name}</h3>

@@ -9,10 +9,11 @@ import {
   getActiveCategories,
   getActiveProducts,
   getSettings,
+  getProductImageUrl,
   isProductAvailable,
   loadCatalogData,
   normalizeWhatsapp,
-  subscribeToProductsChanges,
+  subscribeToCatalogDataChanges,
 } from '@/lib/data';
 import type { Category, HomeBanner, Product, SiteSettings } from '@/types';
 
@@ -60,8 +61,10 @@ export default function Home() {
   const whatsappUrl = `https://wa.me/${normalizeWhatsapp(settings.whatsappNumber)}`;
   const showHeroButton = heroSlides[currentHeroSlide]?.slotIndex === 0;
 
-  const handleProductsRealtimeChange = useCallback((nextProducts: Product[]) => {
+  const handleCatalogRealtimeChange = useCallback((nextProducts: Product[], nextCategories: Category[], nextSettings: SiteSettings) => {
     setProducts(nextProducts.filter(isProductAvailable));
+    setCategories(nextCategories.filter(category => category.isActive).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+    setSettings(nextSettings);
   }, []);
 
   useEffect(() => {
@@ -77,7 +80,7 @@ export default function Home() {
     return () => { mounted = false; };
   }, []);
 
-  useEffect(() => subscribeToProductsChanges(handleProductsRealtimeChange), [handleProductsRealtimeChange]);
+  useEffect(() => subscribeToCatalogDataChanges(handleCatalogRealtimeChange), [handleCatalogRealtimeChange]);
 
   useEffect(() => {
     const heroAssets = Array.from(new Set(heroSlides.flatMap(slide => [slide.mobile || slide.desktop, slide.desktop || slide.mobile]).filter(Boolean)));
@@ -307,7 +310,7 @@ export default function Home() {
         <div className="mx-auto max-w-7xl">
           <SectionTitle>Categorias</SectionTitle>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:gap-6">
-            {categories.slice(0, 6).map((category, index) => (
+            {categories.map((category, index) => (
               <motion.div key={category.id} initial={{ opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: index * 0.04, duration: 0.45 }}>
                 <Link to={`/catalog?category=${encodeURIComponent(category.slug)}`} className="group relative block aspect-[1.65/1] overflow-hidden rounded-lg bg-noir-200 lg:aspect-[1.75/1]">
                   <img src={fallbackImage(category.imageUrl)} alt={category.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" loading="lazy" />
@@ -358,7 +361,7 @@ export default function Home() {
             <button onClick={() => setSelectedCatalogCategory('')} className={`shrink-0 rounded-md px-5 py-3 text-[10px] font-black uppercase tracking-[0.08em] transition-colors ${!selectedCatalogCategory ? 'bg-black text-white' : 'bg-noir-100 text-noir-700 hover:bg-noir-200'}`}>
               Todos
             </button>
-            {categories.slice(0, 6).map(category => (
+            {categories.map(category => (
               <button key={category.id} onClick={() => setSelectedCatalogCategory(category.slug)} className={`shrink-0 rounded-md px-5 py-3 text-[10px] font-black uppercase tracking-[0.08em] transition-colors ${selectedCatalogCategory === category.slug ? 'bg-black text-white' : 'bg-noir-100 text-noir-700 hover:bg-noir-200'}`}>
                 {category.name}
               </button>
@@ -488,7 +491,7 @@ function HomeProductCard({ product, index, compact }: { product: Product; index:
     <motion.div initial={{ opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, margin: '-40px' }} transition={{ duration: 0.45, delay: index * 0.04 }}>
       <Link to={`/product/${product.slug}`} className="group block text-center">
         <div className={`relative overflow-hidden rounded-lg bg-noir-100 ${compact ? 'aspect-square' : 'aspect-[1.05/1]'}`}>
-          <img src={fallbackImage(product.images[0])} alt={product.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" loading="lazy" />
+          <img src={fallbackImage(getProductImageUrl(product.images[0]))} alt={product.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" loading="lazy" />
           {product.badge && (
             <span className="absolute left-2 top-2 rounded bg-noir-900 px-2 py-1 text-[9px] font-black uppercase tracking-[0.08em] text-white">
               {product.badge === 'new' ? 'Novo' : product.badge === 'sale' ? 'Sale' : 'Best'}

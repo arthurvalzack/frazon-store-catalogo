@@ -3,8 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { SlidersHorizontal, X } from 'lucide-react';
 import ProductCard from '@/components/ProductCard';
-import { getActiveCategories, getActiveProducts, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
-import type { Category, Product } from '@/types';
+import { getActiveCategories, getActiveProducts, isProductAvailable, loadCatalogData, subscribeToCatalogDataChanges } from '@/lib/data';
+import type { Category, Product, SiteSettings } from '@/types';
 
 export default function Catalog() {
   const [searchParams] = useSearchParams();
@@ -18,8 +18,9 @@ export default function Catalog() {
   const perPage = 12;
   const filterParam = searchParams.get('filter');
 
-  const handleProductsRealtimeChange = useCallback((nextProducts: Product[]) => {
+  const handleCatalogRealtimeChange = useCallback((nextProducts: Product[], nextCategories: Category[], _nextSettings: SiteSettings) => {
     setProducts(nextProducts.filter(isProductAvailable));
+    setCategories(nextCategories.filter(category => category.isActive));
   }, []);
 
   useEffect(() => {
@@ -36,8 +37,8 @@ export default function Catalog() {
   }, [searchParams]);
 
   useEffect(() => {
-    return subscribeToProductsChanges(handleProductsRealtimeChange);
-  }, [handleProductsRealtimeChange]);
+    return subscribeToCatalogDataChanges(handleCatalogRealtimeChange);
+  }, [handleCatalogRealtimeChange]);
 
   useEffect(() => {
     setPage(1);

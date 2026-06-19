@@ -60,6 +60,13 @@ type InventoryRow = {
   updated_at: string;
 };
 
+type BulkSyncFailure = {
+  productId: string;
+  productName: string;
+  status: number;
+  message: string;
+};
+
 const EXTERNAL_SOURCE = 'frazon_catalog';
 
 export default async function handler(req: any, res: any) {
@@ -80,7 +87,7 @@ export default async function handler(req: any, res: any) {
       !inventoryUrl ? 'INVENTORY_SUPABASE_URL' : '',
       !inventoryServiceRoleKey ? 'INVENTORY_SUPABASE_SERVICE_ROLE_KEY' : '',
     ].filter(Boolean);
-    console.error('[INVENTORY PRODUCT SYNC ERROR]', { status: 500, message: 'Missing environment variables', missing });
+    console.error('[INVENTORY BULK SYNC ERROR]', { status: 500, message: 'Missing environment variables', missing });
     return res.status(500).json({ error: 'Inventory sync is not configured', missing });
   }
 
@@ -91,40 +98,63 @@ export default async function handler(req: any, res: any) {
   if (!validUser) return res.status(401).json({ error: 'Unauthorized' });
 
   const body = parseBody(req.body);
-  const product = body?.product as CatalogProduct | undefined;
-  if (!isValidProduct(product)) {
-    return res.status(400).json({ error: 'Invalid product payload' });
-  }
+  const products = Array.isArray(body?.products) ? body.products.filter(isValidProduct) as CatalogProduct[] : [];
+  if (!products.length) return res.status(400).json({ error: 'No valid products to sync' });
 
-  const inventoryProduct = catalogProductToInventory(product);
+  console.info('[INVENTORY BULK SYNC START]', { total: products.length });
 
-  try {
-    const existingId = await findInventoryProductId(inventoryUrl, inventoryServiceRoleKey, product.id);
+  let created = 0;
+  let updated = 0;
+  const failures: BulkSyncFailure[] = [];
 
-    if (existingId) {
-      await patchInventoryProduct(inventoryUrl, inventoryServiceRoleKey, existingId, inventoryProduct);
-    } else {
-      await createInventoryProduct(inventoryUrl, inventoryServiceRoleKey, inventoryProduct);
+  for (const product of products) {
+    try {
+      const result = await syncCatalogProduct(inventoryUrl, inventoryServiceRoleKey, product);
+      if (result === 'created') created += 1;
+      else updated += 1;
+    } catch (error) {
+      const syncError = normalizeSyncError(error);
+      failures.push({
+        productId: product.id,
+        productName: product.name,
+        status: syncError.status,
+        message: syncError.message,
+      });
+      console.error('[INVENTORY PRODUCT SYNC ERROR]', {
+        productId: product.id,
+        productName: product.name,
+        status: syncError.status,
+        message: syncError.message,
+        path: syncError.path,
+        details: syncError.details,
+      });
     }
-  } catch (error) {
-    const syncError = normalizeSyncError(error);
-    console.error('[INVENTORY PRODUCT SYNC ERROR]', {
-      status: syncError.status,
-      message: syncError.message,
-      path: syncError.path,
-      details: syncError.details,
-      payload: summarizeInventoryPayload(inventoryProduct),
-    });
-    return res.status(502).json({
-      error: 'Inventory product sync failed',
-      status: syncError.status,
-      message: syncError.message,
-      details: syncError.details,
-      path: syncError.path,
-    });
   }
 
-  return res.status(200).json({ ok: true, id: inventoryProduct.id });
+  const result = {
+    total: products.length,
+    success: created + updated,
+    created,
+    updated,
+    failed: failures.length,
+    failures,
+  };
+
+  console.info('[INVENTORY BULK SYNC RESULT]', result);
+  return res.status(failures.length ? 207 : 200).json(result);
+}
+
+async function syncCatalogProduct(inventoryUrl: string, serviceRoleKey: string, product: CatalogProduct): Promise<'created' | 'updated'> {
+  const inventoryProduct = catalogProductToInventory(product);
+  const existingId = await findInventoryProductId(inventoryUrl, serviceRoleKey, product.id);
+
+  if (existingId) {
+    await patchInventoryProduct(inventoryUrl, serviceRoleKey, existingId, inventoryProduct);
+    return 'updated';
+  }
+
+  await createInventoryProduct(inventoryUrl, serviceRoleKey, inventoryProduct);
+  return 'created';
 }
 
 function getBearerToken(authorization?: string): string {
@@ -208,11 +238,7 @@ function catalogProductToInventory(product: CatalogProduct): InventoryRow {
 }
 
 async function findInventoryProductId(inventoryUrl: string, serviceRoleKey: string, externalId: string): Promise<string | null> {
-  const idParams = new URLSearchParams({
-    select: 'id',
-    id: `eq.${externalId}`,
-    limit: '1',
-  });
+  const idParams = new URLSearchParams({ select: 'id', id: `eq.${externalId}`, limit: '1' });
   const idResponse = await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?${idParams.toString()}`);
   const idRows = await idResponse.json() as Array<{ id: string }>;
   if (idRows[0]?.id) return idRows[0].id;
@@ -227,15 +253,11 @@ async function findInventoryProductId(inventoryUrl: string, serviceRoleKey: stri
   const externalRows = await externalResponse.json() as Array<{ id: string }>;
   if (externalRows[0]?.id) return externalRows[0].id;
 
-  const deterministicId = `catalog_${externalId}`;
-  const legacyIdParams = new URLSearchParams({
-    select: 'id',
-    id: `eq.${deterministicId}`,
-    limit: '1',
-  });
-  const legacyIdResponse = await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?${legacyIdParams.toString()}`);
-  const legacyIdRows = await legacyIdResponse.json() as Array<{ id: string }>;
-  return legacyIdRows[0]?.id || null;
+  const legacyId = `catalog_${externalId}`;
+  const legacyParams = new URLSearchParams({ select: 'id', id: `eq.${legacyId}`, limit: '1' });
+  const legacyResponse = await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?${legacyParams.toString()}`);
+  const legacyRows = await legacyResponse.json() as Array<{ id: string }>;
+  return legacyRows[0]?.id || null;
 }
 
 async function patchInventoryProduct(inventoryUrl: string, serviceRoleKey: string, id: string, product: InventoryRow): Promise<void> {
@@ -284,18 +306,9 @@ class InventorySyncError extends Error {
 
 function normalizeSyncError(error: unknown): { status: number; message: string; path: string; details: string } {
   if (error instanceof InventorySyncError) {
-    return {
-      status: error.status,
-      message: error.message,
-      path: error.path,
-      details: error.details,
-    };
+    return { status: error.status, message: error.message, path: error.path, details: error.details };
   }
-
-  if (error instanceof Error) {
-    return { status: 500, message: error.message, path: '', details: '' };
-  }
-
+  if (error instanceof Error) return { status: 500, message: error.message, path: '', details: '' };
   return { status: 500, message: 'Unknown inventory sync error', path: '', details: '' };
 }
 
@@ -305,21 +318,6 @@ function normalizeImageUrls(value: CatalogProduct['images']): string[] {
     .map(image => typeof image === 'string' ? image : image?.url || '')
     .map(url => url.trim())
     .filter(url => Boolean(url) && !url.startsWith('data:') && !url.startsWith('blob:'));
-}
-
-function summarizeInventoryPayload(product: InventoryRow) {
-  return {
-    id: product.id,
-    external_id: product.external_id,
-    name: product.name,
-    category_id: product.category_id,
-    category_name: product.category_name,
-    sale_price: product.sale_price,
-    image_count: product.images.length,
-    variant_count: product.variants.length,
-    total_quantity: product.total_quantity,
-    status: product.status,
-  };
 }
 
 function buildProductSku(value: string): string {

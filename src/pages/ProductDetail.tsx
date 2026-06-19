@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Heart, RotateCcw, Share2, Shield, ShoppingBag, Truck } from 'lucide-react';
 import ProductCard from '@/components/ProductCard';
 import { cn } from '@/utils/cn';
-import { fallbackImage, formatPrice, getActiveProducts, getAvailableColors, getAvailableSizes, getProductBySlug, getVariantStock, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
+import { fallbackImage, findProductImageIndexByColor, formatPrice, getActiveProducts, getAvailableColors, getAvailableSizes, getProductBySlug, getProductImageUrl, getVariantStock, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
 import { useCart } from '@/context/CartContext';
 import type { Product } from '@/types';
 
@@ -95,6 +95,8 @@ export default function ProductDetail() {
     setSelectedColor(color);
     const sizes = getAvailableSizes(product, color);
     setSelectedSize(sizes[0] || '');
+    const imageIndex = findProductImageIndexByColor(product, color);
+    if (imageIndex >= 0) setSelectedImage(imageIndex);
     setQuantity(1);
   };
 
@@ -121,13 +123,13 @@ export default function ProductDetail() {
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-2 lg:gap-16">
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }}>
             <div className="aspect-[3/4] overflow-hidden bg-noir-100">
-              <motion.img key={selectedImage} initial={{ opacity: 0 }} animate={{ opacity: 1 }} src={fallbackImage(product.images[selectedImage])} alt={product.name} className="h-full w-full object-cover" />
+              <motion.img key={selectedImage} initial={{ opacity: 0 }} animate={{ opacity: 1 }} src={fallbackImage(getProductImageUrl(product.images[selectedImage]))} alt={product.name} className="h-full w-full object-cover" />
             </div>
             {product.images.length > 1 && (
               <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
-                {product.images.slice(0, 3).map((img, index) => (
-                  <button key={img} onClick={() => setSelectedImage(index)} className={cn('h-24 w-20 shrink-0 overflow-hidden border-2 bg-noir-100 transition-colors', selectedImage === index ? 'border-noir-900' : 'border-transparent')}>
-                    <img src={fallbackImage(img)} alt="" className="h-full w-full object-cover" />
+                {product.images.slice(0, 6).map((img, index) => (
+                  <button key={`${img.url}-${index}`} onClick={() => setSelectedImage(index)} className={cn('h-24 w-20 shrink-0 overflow-hidden border-2 bg-noir-100 transition-colors', selectedImage === index ? 'border-noir-900' : 'border-transparent')}>
+                    <img src={fallbackImage(getProductImageUrl(img))} alt="" className="h-full w-full object-cover" />
                   </button>
                 ))}
               </div>

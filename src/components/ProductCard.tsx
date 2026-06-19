@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShoppingBag } from 'lucide-react';
 import type { Product } from '@/types';
-import { fallbackImage, formatPrice, getAvailableColors, getAvailableSizes, getVariantStock } from '@/lib/data';
+import { fallbackImage, formatPrice, getAvailableColors, getAvailableSizes, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
 import { useCart } from '@/context/CartContext';
 import { cn } from '@/utils/cn';
 
@@ -23,6 +23,7 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
   const [added, setAdded] = useState(false);
   const { addItem } = useCart();
   const stock = getVariantStock(product, selectedColor, selectedSize);
+  const productImage = getProductImageForColor(product, selectedColor) || product.images[0];
 
   const handleAddToCart = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -52,7 +53,7 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
       <Link to={`/product/${product.slug}`} className="group block">
         <div className="product-img-wrapper relative aspect-[3/4] overflow-hidden rounded-sm bg-noir-100" onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
           {!imgLoaded && <div className="absolute inset-0 shimmer" />}
-          <img src={fallbackImage(product.images[0])} alt={product.name} className={cn('product-img h-full w-full object-cover transition-transform duration-700 ease-out', imgLoaded ? 'opacity-100' : 'opacity-0')} onLoad={() => setImgLoaded(true)} loading="lazy" />
+          <img src={fallbackImage(getProductImageUrl(productImage))} alt={product.name} className={cn('product-img h-full w-full object-cover transition-transform duration-700 ease-out', imgLoaded ? 'opacity-100' : 'opacity-0')} onLoad={() => setImgLoaded(true)} loading="lazy" />
           <div className="product-overlay absolute inset-0 bg-black/10 opacity-0 transition-opacity duration-300" />
 
           {product.badge && (
