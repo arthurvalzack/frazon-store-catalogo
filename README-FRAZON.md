@@ -31,6 +31,24 @@ VITE_SUPABASE_URL=https://SEU-PROJETO.supabase.co
 VITE_SUPABASE_ANON_KEY=SUA_CHAVE_ANON_PUBLICA
 ```
 
+Para testar a sincronizacao de inventario localmente com o Vite, rode tambem a API da Vercel em outro terminal:
+
+```bash
+npx vercel dev --listen 3000
+```
+
+E adicione no `.env.local` usado pelo Vite:
+
+```env
+VITE_API_BASE_URL=http://localhost:3000
+CATALOG_SUPABASE_URL=https://SEU-PROJETO-CATALOGO.supabase.co
+CATALOG_SUPABASE_ANON_KEY=SUA_CHAVE_ANON_PUBLICA_DO_CATALOGO
+INVENTORY_SUPABASE_URL=https://SEU-PROJETO-INVENTARIO.supabase.co
+INVENTORY_SUPABASE_SERVICE_ROLE_KEY=SUA_SERVICE_ROLE_DO_INVENTARIO
+```
+
+`INVENTORY_SUPABASE_SERVICE_ROLE_KEY` deve ficar somente no ambiente da API/Vercel. Nunca use essa chave com prefixo `VITE_`.
+
 ## Como configurar o Supabase
 
 1. Crie um projeto no Supabase.

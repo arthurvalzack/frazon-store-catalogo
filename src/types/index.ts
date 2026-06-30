@@ -139,4 +139,5 @@ export const PRODUCT_COLORS: ProductColor[] = [
   { name: 'Marrom', hex: '#6B4423' },
   { name: 'Vinho', hex: '#722F37' },
   { name: 'Vermelho', hex: '#B91C1C' },
+  { name: 'Amarelo', hex: '#FACC15' },
 ];

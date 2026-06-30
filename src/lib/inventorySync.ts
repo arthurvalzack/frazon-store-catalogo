@@ -15,6 +15,23 @@ export type InventoryBulkSyncResult = {
 };
 
 export const INVENTORY_SYNC_WARNING = 'Produto salvo no catálogo, mas não foi sincronizado com o inventário.';
+const LOCAL_API_ERROR = 'Não foi possível sincronizar com o inventário. Verifique se a API local está rodando e se as variáveis de ambiente estão configuradas.';
+
+async function parseSyncResponse(response: Response): Promise<{ text: string; parsed: { error?: string; message?: string } }> {
+  const text = await response.text().catch(() => '');
+  if (!text) return { text, parsed: {} };
+
+  try {
+    return { text, parsed: JSON.parse(text) as { error?: string; message?: string } };
+  } catch {
+    return { text, parsed: { message: text } };
+  }
+}
+
+function syncErrorMessage(response: Response, text: string, parsed: { error?: string; message?: string }, fallback: string): string {
+  if (response.status === 404) return LOCAL_API_ERROR;
+  return parsed.message || parsed.error || text || fallback;
+}
 
 export async function syncInventoryProduct(product: Product, accessToken: string): Promise<void> {
   const response = await fetch('/api/sync-inventory-product', {
@@ -27,10 +44,10 @@ export async function syncInventoryProduct(product: Product, accessToken: string
   });
 
   if (!response.ok) {
-    const details = await response.text().catch(() => '');
+    const { text, parsed } = await parseSyncResponse(response);
     console.error('[INVENTORY PRODUCT SYNC ERROR]', {
       status: response.status,
-      details,
+      details: text,
       product: {
         id: product.id,
         name: product.name,
@@ -38,7 +55,7 @@ export async function syncInventoryProduct(product: Product, accessToken: string
         variantCount: product.variants.length,
       },
     });
-    throw new Error(details || `Inventory product sync failed with status ${response.status}`);
+    throw new Error(syncErrorMessage(response, text, parsed, `Inventory product sync failed with status ${response.status}`));
   }
 }
 
@@ -52,15 +69,10 @@ export async function syncAllInventoryProducts(products: Product[], accessToken:
     body: JSON.stringify({ products }),
   });
 
-  const details = await response.text().catch(() => '');
-  let parsed: Partial<InventoryBulkSyncResult> & { error?: string; message?: string } = {};
-  if (details) {
-    try {
-      parsed = JSON.parse(details);
-    } catch {
-      parsed = { message: details };
-    }
-  }
+  const { text: details, parsed } = await parseSyncResponse(response) as {
+    text: string;
+    parsed: Partial<InventoryBulkSyncResult> & { error?: string; message?: string };
+  };
 
   if (!response.ok) {
     console.error('[INVENTORY BULK SYNC ERROR]', {
@@ -68,7 +80,7 @@ export async function syncAllInventoryProducts(products: Product[], accessToken:
       details,
       productCount: products.length,
     });
-    throw new Error(parsed.message || parsed.error || details || `Inventory bulk sync failed with status ${response.status}`);
+    throw new Error(syncErrorMessage(response, details, parsed, `Inventory bulk sync failed with status ${response.status}`));
   }
 
   return {
