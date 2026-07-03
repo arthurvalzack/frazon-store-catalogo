@@ -60,6 +60,12 @@ type InventoryRow = {
   updated_at: string;
 };
 
+type LinkedInventoryProduct = {
+  id: string;
+  external_id: string | null;
+  status: 'active' | 'inactive' | string | null;
+};
+
 type BulkSyncFailure = {
   productId: string;
   productName: string;
@@ -68,11 +74,17 @@ type BulkSyncFailure = {
 };
 
 const EXTERNAL_SOURCE = 'frazon_catalog';
+const LEGACY_EXTERNAL_SOURCE = 'catalog';
+const MAX_BODY_BYTES = 3_000_000;
+const MAX_BULK_PRODUCTS = 1000;
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+  if (getBodySize(req.body) > MAX_BODY_BYTES) {
+    return res.status(413).json({ error: 'Payload too large' });
   }
 
   const catalogUrl = process.env.CATALOG_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -94,20 +106,24 @@ export default async function handler(req: any, res: any) {
   const token = getBearerToken(req.headers.authorization);
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const validUser = await validateCatalogUser(catalogUrl, catalogAnonKey, token);
-  if (!validUser) return res.status(401).json({ error: 'Unauthorized' });
+  const catalogUser = await getCatalogUser(catalogUrl, catalogAnonKey, token);
+  if (!isAuthorizedAdminEmail(catalogUser?.email)) return res.status(401).json({ error: 'Unauthorized' });
 
   const body = parseBody(req.body);
   const products = Array.isArray(body?.products) ? body.products.filter(isValidProduct) as CatalogProduct[] : [];
   if (!products.length) return res.status(400).json({ error: 'No valid products to sync' });
+  if (products.length > MAX_BULK_PRODUCTS) return res.status(413).json({ error: 'Too many products to sync' });
+  const activeProducts = products.filter(isCatalogProductActive);
+  const activeCatalogIds = new Set(activeProducts.map(product => product.id));
 
-  console.info('[INVENTORY BULK SYNC START]', { total: products.length });
+  console.info('[INVENTORY BULK SYNC START]', { total: products.length, active: activeProducts.length });
 
   let created = 0;
   let updated = 0;
+  let deactivated = 0;
   const failures: BulkSyncFailure[] = [];
 
-  for (const product of products) {
+  for (const product of activeProducts) {
     try {
       const result = await syncCatalogProduct(inventoryUrl, inventoryServiceRoleKey, product);
       if (result === 'created') created += 1;
@@ -118,7 +134,7 @@ export default async function handler(req: any, res: any) {
         productId: product.id,
         productName: product.name,
         status: syncError.status,
-        message: syncError.message,
+        message: 'Inventory product sync failed',
       });
       console.error('[INVENTORY PRODUCT SYNC ERROR]', {
         productId: product.id,
@@ -131,11 +147,53 @@ export default async function handler(req: any, res: any) {
     }
   }
 
+  try {
+    const linkedProducts = await listLinkedInventoryProducts(inventoryUrl, inventoryServiceRoleKey);
+    const staleProducts = linkedProducts.filter(product => product.external_id && !activeCatalogIds.has(product.external_id));
+
+    for (const product of staleProducts) {
+      try {
+        await deactivateInventoryProduct(inventoryUrl, inventoryServiceRoleKey, product.id);
+        deactivated += 1;
+      } catch (error) {
+        const syncError = normalizeSyncError(error);
+        failures.push({
+          productId: product.external_id || product.id,
+          productName: product.external_id || product.id,
+          status: syncError.status,
+          message: 'Inventory product deactivate failed',
+        });
+        console.error('[INVENTORY PRODUCT DEACTIVATE ERROR]', {
+          productId: product.external_id || product.id,
+          status: syncError.status,
+          message: syncError.message,
+          path: syncError.path,
+          details: syncError.details,
+        });
+      }
+    }
+  } catch (error) {
+    const syncError = normalizeSyncError(error);
+    failures.push({
+      productId: 'inventory-linked-products',
+      productName: 'Produtos vinculados ao catálogo',
+      status: syncError.status,
+      message: 'Inventory bulk deactivate failed',
+    });
+    console.error('[INVENTORY BULK DEACTIVATE ERROR]', {
+      status: syncError.status,
+      message: syncError.message,
+      path: syncError.path,
+      details: syncError.details,
+    });
+  }
+
   const result = {
     total: products.length,
-    success: created + updated,
+    success: created + updated + deactivated,
     created,
     updated,
+    deactivated,
     failed: failures.length,
     failures,
   };
@@ -162,14 +220,15 @@ function getBearerToken(authorization?: string): string {
   return match?.[1]?.trim() || '';
 }
 
-async function validateCatalogUser(catalogUrl: string, anonKey: string, token: string): Promise<boolean> {
+async function getCatalogUser(catalogUrl: string, anonKey: string, token: string): Promise<{ email?: string } | null> {
   const response = await fetch(`${trimSlash(catalogUrl)}/auth/v1/user`, {
     headers: {
       Authorization: `Bearer ${token}`,
       apikey: anonKey,
     },
   });
-  return response.ok;
+  if (!response.ok) return null;
+  return response.json().catch(() => null) as Promise<{ email?: string } | null>;
 }
 
 function parseBody(body: unknown): any {
@@ -184,7 +243,19 @@ function parseBody(body: unknown): any {
 }
 
 function isValidProduct(product: CatalogProduct | undefined): product is CatalogProduct {
-  return Boolean(product?.id && product.name && product.slug);
+  return Boolean(
+    product?.id &&
+    isSafeId(product.id) &&
+    typeof product.name === 'string' &&
+    product.name.trim().length > 0 &&
+    product.name.length <= 160 &&
+    typeof product.slug === 'string' &&
+    product.slug.length <= 180
+  );
+}
+
+function isCatalogProductActive(product: CatalogProduct): boolean {
+  return product.isActive !== false && product.is_active !== false;
 }
 
 function catalogProductToInventory(product: CatalogProduct): InventoryRow {
@@ -245,7 +316,7 @@ async function findInventoryProductId(inventoryUrl: string, serviceRoleKey: stri
 
   const externalParams = new URLSearchParams({
     select: 'id',
-    external_source: `eq.${EXTERNAL_SOURCE}`,
+    external_source: `in.(${EXTERNAL_SOURCE},${LEGACY_EXTERNAL_SOURCE})`,
     external_id: `eq.${externalId}`,
     limit: '1',
   });
@@ -258,6 +329,27 @@ async function findInventoryProductId(inventoryUrl: string, serviceRoleKey: stri
   const legacyResponse = await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?${legacyParams.toString()}`);
   const legacyRows = await legacyResponse.json() as Array<{ id: string }>;
   return legacyRows[0]?.id || null;
+}
+
+async function listLinkedInventoryProducts(inventoryUrl: string, serviceRoleKey: string): Promise<LinkedInventoryProduct[]> {
+  const params = new URLSearchParams({
+    select: 'id,external_id,status',
+    external_source: `in.(${EXTERNAL_SOURCE},${LEGACY_EXTERNAL_SOURCE})`,
+    limit: '1000',
+  });
+  const response = await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?${params.toString()}`);
+  return response.json() as Promise<LinkedInventoryProduct[]>;
+}
+
+async function deactivateInventoryProduct(inventoryUrl: string, serviceRoleKey: string, id: string): Promise<void> {
+  await inventoryFetch(inventoryUrl, serviceRoleKey, `/rest/v1/products?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({
+      status: 'inactive',
+      updated_at: new Date().toISOString(),
+    }),
+  });
 }
 
 async function patchInventoryProduct(inventoryUrl: string, serviceRoleKey: string, id: string, product: InventoryRow): Promise<void> {
@@ -317,7 +409,32 @@ function normalizeImageUrls(value: CatalogProduct['images']): string[] {
   return value
     .map(image => typeof image === 'string' ? image : image?.url || '')
     .map(url => url.trim())
-    .filter(url => Boolean(url) && !url.startsWith('data:') && !url.startsWith('blob:'));
+    .filter(isSafeImageUrl);
+}
+
+function isAuthorizedAdminEmail(email?: string): boolean {
+  if (!email) return false;
+  const allowed = (process.env.CATALOG_ADMIN_EMAILS || process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || '')
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
+  return !allowed.length || allowed.includes(email.trim().toLowerCase());
+}
+
+function getBodySize(body: unknown): number {
+  if (typeof body === 'string') return Buffer.byteLength(body);
+  if (!body) return 0;
+  return Buffer.byteLength(JSON.stringify(body));
+}
+
+function isSafeId(value: string): boolean {
+  return /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+}
+
+function isSafeImageUrl(url: string): boolean {
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return false;
+  return url.length <= 2048 && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/'));
 }
 
 function buildProductSku(value: string): string {

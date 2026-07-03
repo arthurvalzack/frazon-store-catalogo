@@ -27,6 +27,7 @@ export interface Product {
   description: string;
   price: number;
   originalPrice?: number;
+  pixDiscountPercent?: number | null;
   colors: ProductColor[];
   sizes: string[];
   variants: ProductVariant[];
@@ -105,6 +106,7 @@ export interface OrderItem {
   quantity: number;
   unitPrice: number;
   subtotal: number;
+  pixDiscountPercent?: number | null;
   image?: string;
 }
 
@@ -112,6 +114,8 @@ export interface Order {
   id: string;
   items: OrderItem[];
   subtotal: number;
+  customerName?: string;
+  customerWhatsapp?: string;
   whatsappMessage: string;
   status: 'whatsapp' | 'pending' | 'contacted' | 'completed' | 'completed_sale' | 'cancelled';
   stockDeducted?: boolean;

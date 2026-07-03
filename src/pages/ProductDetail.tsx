@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Heart, RotateCcw, Share2, Shield, ShoppingBag, Truck } from 'lucide-react';
 import ProductCard from '@/components/ProductCard';
 import { cn } from '@/utils/cn';
-import { fallbackImage, findProductImageIndexByColor, formatPrice, getActiveProducts, getAvailableColors, getAvailableSizes, getProductBySlug, getProductImageUrl, getVariantStock, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
+import { fallbackImage, findProductImageIndexByColor, formatPixDiscountBadge, formatPrice, getActiveProducts, getAvailableColors, getAvailableSizes, getProductBySlug, getProductImageUrl, getVariantStock, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
 import { useCart } from '@/context/CartContext';
 import type { Product } from '@/types';
 
@@ -68,6 +68,7 @@ export default function ProductDetail() {
   const availableColors = useMemo(() => product ? getAvailableColors(product) : [], [product]);
   const availableSizes = useMemo(() => product ? getAvailableSizes(product, selectedColor) : [], [product, selectedColor]);
   const stock = product ? getVariantStock(product, selectedColor, selectedSize) : 0;
+  const pixDiscountBadge = formatPixDiscountBadge(product?.pixDiscountPercent);
 
   useEffect(() => {
     if (availableSizes.length && !availableSizes.includes(selectedSize)) {
@@ -148,14 +149,12 @@ export default function ProductDetail() {
               </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <span className="text-2xl font-semibold text-noir-900">{formatPrice(product.price)}</span>
-              {product.originalPrice && (
-                <>
-                  <span className="text-lg text-noir-300 line-through">{formatPrice(product.originalPrice)}</span>
-                  <span className="bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">-{Math.round((1 - product.price / product.originalPrice) * 100)}%</span>
-                </>
-              )}
+            <div className="mt-4 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-2xl font-semibold text-noir-900">{formatPrice(product.price)}</span>
+                {pixDiscountBadge && <span className="rounded bg-[#c99a22] px-2 py-1 text-xs font-black uppercase tracking-[0.04em] text-black">{pixDiscountBadge}</span>}
+              </div>
+              {product.originalPrice && <p className="text-lg text-noir-300 line-through">{formatPrice(product.originalPrice)}</p>}
             </div>
             <p className="mt-2 text-xs text-noir-400">ou 3x de {formatPrice(product.price / 3)} sem juros</p>
 

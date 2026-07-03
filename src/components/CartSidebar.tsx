@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import { useCart } from '@/context/CartContext';
-import { fallbackImage, formatPrice, getProductById, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
+import { fallbackImage, formatPixDiscountPercent, formatPrice, getProductById, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
 
 export default function CartSidebar() {
   const { items, isOpen, closeCart, updateQuantity, removeItem, totalItems, totalPrice, sendToWhatsApp, isSending, cartError } = useCart();
@@ -55,6 +55,7 @@ export default function CartSidebar() {
                     const product = getProductById(item.productId);
                     if (!product) return null;
                     const stock = getVariantStock(product, item.color, item.size);
+                    const pixDiscountPercent = formatPixDiscountPercent(product.pixDiscountPercent);
                     return (
                       <div key={`${item.productId}-${item.color}-${item.size}`} className="flex gap-4 px-5 py-4 sm:px-6">
                         <div className="h-24 w-20 shrink-0 overflow-hidden rounded-sm bg-noir-100">
@@ -63,6 +64,7 @@ export default function CartSidebar() {
                         <div className="min-w-0 flex-1">
                           <h3 className="line-clamp-2 text-sm font-medium text-noir-900">{product.name}</h3>
                           <p className="mt-1 text-xs text-noir-400">{item.color} · {item.size}</p>
+                          {pixDiscountPercent && <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-[#9f7615]">Pix: -{pixDiscountPercent}%</p>}
                           {stock <= 4 && <p className="mt-1 text-[11px] font-medium text-red-600">Últimas {stock} unidade(s)</p>}
                           <div className="mt-3 flex items-center justify-between gap-2">
                             <span className="text-sm font-semibold text-noir-900">{formatPrice(product.price * item.quantity)}</span>

@@ -61,11 +61,16 @@ type InventoryRow = {
 };
 
 const EXTERNAL_SOURCE = 'frazon_catalog';
+const LEGACY_EXTERNAL_SOURCE = 'catalog';
+const MAX_BODY_BYTES = 750_000;
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+  if (getBodySize(req.body) > MAX_BODY_BYTES) {
+    return res.status(413).json({ error: 'Payload too large' });
   }
 
   const catalogUrl = process.env.CATALOG_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -87,8 +92,8 @@ export default async function handler(req: any, res: any) {
   const token = getBearerToken(req.headers.authorization);
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const validUser = await validateCatalogUser(catalogUrl, catalogAnonKey, token);
-  if (!validUser) return res.status(401).json({ error: 'Unauthorized' });
+  const catalogUser = await getCatalogUser(catalogUrl, catalogAnonKey, token);
+  if (!isAuthorizedAdminEmail(catalogUser?.email)) return res.status(401).json({ error: 'Unauthorized' });
 
   const body = parseBody(req.body);
   const product = body?.product as CatalogProduct | undefined;
@@ -117,10 +122,6 @@ export default async function handler(req: any, res: any) {
     });
     return res.status(502).json({
       error: 'Inventory product sync failed',
-      status: syncError.status,
-      message: syncError.message,
-      details: syncError.details,
-      path: syncError.path,
     });
   }
 
@@ -132,14 +133,15 @@ function getBearerToken(authorization?: string): string {
   return match?.[1]?.trim() || '';
 }
 
-async function validateCatalogUser(catalogUrl: string, anonKey: string, token: string): Promise<boolean> {
+async function getCatalogUser(catalogUrl: string, anonKey: string, token: string): Promise<{ email?: string } | null> {
   const response = await fetch(`${trimSlash(catalogUrl)}/auth/v1/user`, {
     headers: {
       Authorization: `Bearer ${token}`,
       apikey: anonKey,
     },
   });
-  return response.ok;
+  if (!response.ok) return null;
+  return response.json().catch(() => null) as Promise<{ email?: string } | null>;
 }
 
 function parseBody(body: unknown): any {
@@ -154,7 +156,15 @@ function parseBody(body: unknown): any {
 }
 
 function isValidProduct(product: CatalogProduct | undefined): product is CatalogProduct {
-  return Boolean(product?.id && product.name && product.slug);
+  return Boolean(
+    product?.id &&
+    isSafeId(product.id) &&
+    typeof product.name === 'string' &&
+    product.name.trim().length > 0 &&
+    product.name.length <= 160 &&
+    typeof product.slug === 'string' &&
+    product.slug.length <= 180
+  );
 }
 
 function catalogProductToInventory(product: CatalogProduct): InventoryRow {
@@ -219,7 +229,7 @@ async function findInventoryProductId(inventoryUrl: string, serviceRoleKey: stri
 
   const externalParams = new URLSearchParams({
     select: 'id',
-    external_source: `eq.${EXTERNAL_SOURCE}`,
+    external_source: `in.(${EXTERNAL_SOURCE},${LEGACY_EXTERNAL_SOURCE})`,
     external_id: `eq.${externalId}`,
     limit: '1',
   });
@@ -304,7 +314,32 @@ function normalizeImageUrls(value: CatalogProduct['images']): string[] {
   return value
     .map(image => typeof image === 'string' ? image : image?.url || '')
     .map(url => url.trim())
-    .filter(url => Boolean(url) && !url.startsWith('data:') && !url.startsWith('blob:'));
+    .filter(isSafeImageUrl);
+}
+
+function isAuthorizedAdminEmail(email?: string): boolean {
+  if (!email) return false;
+  const allowed = (process.env.CATALOG_ADMIN_EMAILS || process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || '')
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
+  return !allowed.length || allowed.includes(email.trim().toLowerCase());
+}
+
+function getBodySize(body: unknown): number {
+  if (typeof body === 'string') return Buffer.byteLength(body);
+  if (!body) return 0;
+  return Buffer.byteLength(JSON.stringify(body));
+}
+
+function isSafeId(value: string): boolean {
+  return /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+}
+
+function isSafeImageUrl(url: string): boolean {
+  const lower = url.slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return false;
+  return url.length <= 2048 && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/'));
 }
 
 function summarizeInventoryPayload(product: InventoryRow) {

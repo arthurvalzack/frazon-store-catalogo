@@ -5,6 +5,7 @@ export type InventoryBulkSyncResult = {
   success: number;
   created: number;
   updated: number;
+  deactivated: number;
   failed: number;
   failures: Array<{
     productId: string;
@@ -14,7 +15,8 @@ export type InventoryBulkSyncResult = {
   }>;
 };
 
-export const INVENTORY_SYNC_WARNING = 'Produto salvo no catálogo, mas não foi sincronizado com o inventário.';
+export const INVENTORY_SYNC_WARNING = 'Produto salvo no catálogo, mas não foi possível sincronizar com o inventário. Use o botão Sincronizar Inventário.';
+export const INVENTORY_DEACTIVATE_WARNING = 'Produto excluído no catálogo, mas não foi possível desativar no inventário. Use o botão Sincronizar Inventário.';
 const LOCAL_API_ERROR = 'Não foi possível sincronizar com o inventário. Verifique se a API local está rodando e se as variáveis de ambiente estão configuradas.';
 
 async function parseSyncResponse(response: Response): Promise<{ text: string; parsed: { error?: string; message?: string } }> {
@@ -59,6 +61,27 @@ export async function syncInventoryProduct(product: Product, accessToken: string
   }
 }
 
+export async function deactivateInventoryProduct(productId: string, accessToken: string): Promise<void> {
+  const response = await fetch('/api/deactivate-inventory-product', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ productId }),
+  });
+
+  if (!response.ok) {
+    const { text, parsed } = await parseSyncResponse(response);
+    console.error('[INVENTORY PRODUCT DEACTIVATE ERROR]', {
+      status: response.status,
+      details: text,
+      productId,
+    });
+    throw new Error(syncErrorMessage(response, text, parsed, `Inventory product deactivate failed with status ${response.status}`));
+  }
+}
+
 export async function syncAllInventoryProducts(products: Product[], accessToken: string): Promise<InventoryBulkSyncResult> {
   const response = await fetch('/api/sync-inventory-products', {
     method: 'POST',
@@ -88,6 +111,7 @@ export async function syncAllInventoryProducts(products: Product[], accessToken:
     success: Number(parsed.success) || 0,
     created: Number(parsed.created) || 0,
     updated: Number(parsed.updated) || 0,
+    deactivated: Number(parsed.deactivated) || 0,
     failed: Number(parsed.failed) || 0,
     failures: Array.isArray(parsed.failures) ? parsed.failures : [],
   };

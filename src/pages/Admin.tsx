@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Boxes, Camera, Edit2, Image, ListOrdered, LogOut, Package, Plus, Save, Settings, Trash2, Upload, X, type LucideIcon } from 'lucide-react';
+import { BarChart3, Boxes, Camera, Edit2, Image, ListOrdered, LogOut, MessageCircle, Package, Plus, Save, Settings, Trash2, Upload, X, type LucideIcon } from 'lucide-react';
 import type { AdminSession, Category, HomeBanner, Order, Product, ProductBadge, ProductImage, ProductVariant, SiteSettings } from '@/types';
 import { PRODUCT_COLORS, SIZES } from '@/types';
 import { cn } from '@/utils/cn';
-import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getProductImageUrl, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, saveSettings, subscribeToOrdersChanges, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
+import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getProductImageUrl, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, normalizeWhatsapp, saveSettings, subscribeToOrdersChanges, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
 import { syncAllInventoryProducts, type InventoryBulkSyncResult } from '@/lib/inventorySync';
 
 type AdminTab = 'products' | 'categories' | 'site' | 'orders';
@@ -17,6 +17,7 @@ type ProductForm = {
   description: string;
   price: string;
   originalPrice: string;
+  pixDiscountPercent: string;
   images: ProductImage[];
   badge: '' | ProductBadge;
   isActive: boolean;
@@ -38,6 +39,7 @@ const emptyProductForm: ProductForm = {
   description: '',
   price: '',
   originalPrice: '',
+  pixDiscountPercent: '',
   images: [],
   badge: '',
   isActive: true,
@@ -110,7 +112,7 @@ export default function Admin() {
     try {
       const result = await syncAllInventoryProducts(products, session.accessToken);
       setInventorySyncResult(result);
-      const message = `Sincronização concluída: ${result.total} produtos verificados, ${result.success} sincronizados, ${result.failed} falhas.`;
+      const message = `Sincronização concluída: ${result.total} produtos verificados, ${result.created} criados, ${result.updated} atualizados, ${result.deactivated} desativados, ${result.failed} falhas.`;
       setInventorySyncMessage(message);
       console.info('[INVENTORY BULK SYNC RESULT]', result);
       if (result.failed > 0) {
@@ -194,6 +196,7 @@ export default function Admin() {
       description: product.description,
       price: String(product.price),
       originalPrice: product.originalPrice ? String(product.originalPrice) : '',
+      pixDiscountPercent: product.pixDiscountPercent ? String(product.pixDiscountPercent) : '',
       images: product.images.slice(0, 6),
       badge: product.badge || '',
       isActive: product.isActive,
@@ -267,7 +270,10 @@ export default function Admin() {
     if (!file) return;
     setLoading(true);
     try {
-      const url = await uploadCatalogImage(file, 'site', { preserveOriginal: true });
+      const url = await uploadCatalogImage(file, 'site', {
+        preserveOriginal: true,
+        maxSizeBytes: field === 'mobile' ? 2 * 1024 * 1024 : 4 * 1024 * 1024,
+      });
       setSettings(prev => updateHomeBanner(prev, index, field, url));
       showToast('Banner enviado.');
     } catch (uploadError) {
@@ -301,6 +307,7 @@ export default function Admin() {
       description: productForm.description.trim(),
       price: Number(productForm.price),
       originalPrice: productForm.originalPrice ? Number(productForm.originalPrice) : undefined,
+      pixDiscountPercent: productForm.pixDiscountPercent ? Number(productForm.pixDiscountPercent) : null,
       images: productForm.images.slice(0, 6),
       badge: productForm.badge || undefined,
       isActive: productForm.isActive,
@@ -314,7 +321,7 @@ export default function Admin() {
       const inventoryWarning = consumeInventorySyncWarning();
       await refreshData();
       setEditingProduct(false);
-      showToast(inventoryWarning || (productForm.id ? 'Produto atualizado.' : 'Produto criado.'));
+      showToast(inventoryWarning || (productForm.id ? 'Produto atualizado e inventário sincronizado.' : 'Produto criado e inventário sincronizado.'));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Erro ao salvar produto.');
     } finally {
@@ -327,8 +334,9 @@ export default function Admin() {
     setLoading(true);
     try {
       await deleteProduct(product.id);
+      const inventoryWarning = consumeInventorySyncWarning();
       await refreshData();
-      showToast('Produto excluído.');
+      showToast(inventoryWarning || 'Produto excluído e inventário desativado.');
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Erro ao excluir produto.');
     } finally {
@@ -641,7 +649,7 @@ function ensureHomeBanners(banners: HomeBanner[]): HomeBanner[] {
 
 function updateHomeBanner(settings: SiteSettings, index: number, field: 'mobile' | 'desktop' | 'link', value: string): SiteSettings {
   const banners = ensureHomeBanners(settings.homeBanners);
-  banners[index] = { ...banners[index], [field]: field === 'link' ? sanitizeAdminBannerLinkDraft(value) : sanitizeAdminImageUrl(value) };
+  banners[index] = { ...banners[index], [field]: field === 'link' ? sanitizeAdminBannerLinkDraft(value) : sanitizeAdminImageUrlDraft(value) };
   return { ...settings, homeBanners: banners };
 }
 
@@ -653,17 +661,26 @@ function removeHomeBanner(settings: SiteSettings, index: number): SiteSettings {
 
 function sanitizeAdminImageUrl(value: string): string {
   const url = value.trim();
+  if (!url) return '';
   const lower = url.slice(0, 32).toLowerCase();
-  if (lower.startsWith('data:') || lower.startsWith('blob:')) return '';
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
   if (url.length > 2048) return '';
-  return url;
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/')) return url;
+  return '';
+}
+
+function sanitizeAdminImageUrlDraft(value: string): string {
+  const lower = value.trimStart().slice(0, 32).toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+  if (value.length > 2048) return value.slice(0, 2048);
+  return value;
 }
 
 function sanitizeAdminBannerLink(value: string): string {
   const url = value.trim();
   if (!url) return '';
   const lower = url.slice(0, 32).toLowerCase();
-  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
   if (url.length > 2048) return '';
   if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url;
   return '';
@@ -671,7 +688,7 @@ function sanitizeAdminBannerLink(value: string): string {
 
 function sanitizeAdminBannerLinkDraft(value: string): string {
   const lower = value.trimStart().slice(0, 32).toLowerCase();
-  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
   if (value.length > 2048) return value.slice(0, 2048);
   return value;
 }
@@ -712,6 +729,7 @@ function ProductEditor({ form, categories, setForm, onCancel, onSave, addVariant
         <Field label="Categoria *"><select value={form.categoryId} onChange={event => setForm(prev => ({ ...prev, categoryId: event.target.value }))} className={inputClass}><option value="">Selecione...</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></Field>
         <Field label="Preço *"><input type="number" step="0.01" value={form.price} onChange={event => setForm(prev => ({ ...prev, price: event.target.value }))} className={inputClass} placeholder="0.00" /></Field>
         <Field label="Preço antigo / promoção"><input type="number" step="0.01" value={form.originalPrice} onChange={event => setForm(prev => ({ ...prev, originalPrice: event.target.value }))} className={inputClass} placeholder="Opcional" /></Field>
+        <Field label="Desconto no Pix (%)"><input type="number" min="0" step="0.01" value={form.pixDiscountPercent} onChange={event => setForm(prev => ({ ...prev, pixDiscountPercent: event.target.value }))} className={inputClass} placeholder="Opcional" /></Field>
         <Field label="Etiqueta"><select value={form.badge} onChange={event => setForm(prev => ({ ...prev, badge: event.target.value as ProductForm['badge'] }))} className={inputClass}><option value="">Nenhuma</option><option value="new">Novo</option><option value="sale">Sale</option><option value="bestseller">Mais vendido</option></select></Field>
         <div className="md:col-span-2"><Field label="Descrição"><textarea value={form.description} onChange={event => setForm(prev => ({ ...prev, description: event.target.value }))} className={inputClass} rows={4} placeholder="Descrição curta e vendedora." /></Field></div>
       </div>
@@ -983,6 +1001,14 @@ function OrdersPanel({ orders, onRefresh }: { orders: Order[]; onRefresh: () => 
   return <section className="rounded-xl border border-noir-100 bg-white p-4 sm:p-6"><div className="mb-5 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-noir-900">Pedidos salvos</h2><p className="text-sm text-noir-400">Pedidos são registrados antes de abrir o WhatsApp.</p></div><button onClick={onRefresh} className="border border-noir-200 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-noir-600">Atualizar</button></div><div className="space-y-3">{orders.map(order => <div key={order.id} className="rounded-lg border border-noir-100 p-4"><div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold text-noir-900">Pedido {order.id.slice(0, 8)}</p><p className="text-xs text-noir-400">{new Date(order.createdAt).toLocaleString('pt-BR')}</p></div><p className="text-sm font-semibold text-noir-900">{formatPrice(order.subtotal)}</p></div><ul className="mt-3 space-y-1 text-xs text-noir-500">{order.items.map(item => <li key={`${order.id}-${item.productId}-${item.size}-${item.color}`}>{item.quantity}x {item.productName} · {item.color} · {item.size}</li>)}</ul></div>)}{!orders.length && <EmptyState text="Nenhum pedido salvo ainda." />}</div></section>;
 }
 
+function customerWhatsappUrl(order: Order): string {
+  const digits = normalizeWhatsapp(order.customerWhatsapp || '');
+  if (!digits) return '';
+  const phone = digits.startsWith('55') ? digits : `55${digits}`;
+  const message = `Olá, tudo bem? Vi que você montou o pedido #${order.id.slice(0, 8)} na Frazon Store, mas talvez não tenha finalizado pelo WhatsApp. Gostaria de concluir sua compra?`;
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+
 function ConfirmableOrdersPanel({ orders, onRefresh, onConfirm, onCancel, onDelete, loading }: { orders: Order[]; onRefresh: () => void; onConfirm: (order: Order) => void; onCancel: (order: Order) => void; onDelete: (order: Order) => void; loading: boolean }) {
   return (
     <section className="rounded-xl border border-noir-100 bg-white p-4 sm:p-6">
@@ -997,16 +1023,26 @@ function ConfirmableOrdersPanel({ orders, onRefresh, onConfirm, onCancel, onDele
         {orders.map(order => {
           const completed = order.stockDeducted || order.status === 'completed' || order.status === 'completed_sale';
           const cancelled = order.status === 'cancelled';
+          const customerName = order.customerName?.trim() || 'Não informado';
+          const customerWhatsapp = order.customerWhatsapp?.trim() || 'Não informado';
+          const customerUrl = customerWhatsappUrl(order);
           return (
             <div key={order.id} className="rounded-lg border border-noir-100 p-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-noir-900">Pedido {order.id.slice(0, 8)}</p>
                   <p className="text-xs text-noir-400">{new Date(order.createdAt).toLocaleString('pt-BR')}</p>
+                  <p className="mt-2 text-xs text-noir-600">Cliente: {customerName}</p>
+                  <p className="text-xs text-noir-600">WhatsApp: {customerWhatsapp}</p>
                   <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-noir-500">Status: {completed ? 'Venda confirmada' : cancelled ? 'Cancelado' : 'Pendente'}</p>
                 </div>
                 <div className="flex flex-col gap-2 sm:items-end">
                   <p className="text-sm font-semibold text-noir-900">{formatPrice(order.subtotal)}</p>
+                  {customerUrl && (
+                    <a href={customerUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 border border-emerald-200 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 hover:border-emerald-600">
+                      <MessageCircle className="h-3.5 w-3.5" /> Chamar cliente
+                    </a>
+                  )}
                   {completed ? (
                     <span className="text-xs font-semibold text-emerald-600">Venda confirmada</span>
                   ) : cancelled ? (

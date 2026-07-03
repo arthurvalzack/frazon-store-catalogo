@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Camera, Lock, MessageCircle } from 'lucide-react';
+import { Camera, MessageCircle } from 'lucide-react';
 import { getSettings, loadCatalogData, normalizeWhatsapp } from '@/lib/data';
 import type { SiteSettings } from '@/types';
 
@@ -31,10 +31,6 @@ export default function Footer() {
           <a href={whatsappUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 border-l border-white/35 px-2 text-white transition-opacity hover:opacity-70 sm:gap-3 sm:pl-8 sm:pr-0 lg:pl-12">
             <MessageCircle className="h-5 w-5 sm:h-7 sm:w-7" />
             WhatsApp
-          </a>
-          <a href="/admin" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 border-l border-white/35 px-2 text-white transition-opacity hover:opacity-70 sm:gap-3 sm:pl-8 sm:pr-0 lg:pl-12">
-            <Lock className="h-5 w-5 sm:h-7 sm:w-7" />
-            &Aacute;rea administrativa
           </a>
         </div>
 

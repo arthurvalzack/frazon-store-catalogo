@@ -24,6 +24,7 @@ create table if not exists public.products (
   description text not null default '',
   price numeric(12,2) not null default 0 check (price >= 0),
   original_price numeric(12,2) check (original_price is null or original_price >= 0),
+  pix_discount_percent numeric check (pix_discount_percent is null or pix_discount_percent >= 0),
   colors jsonb not null default '[]'::jsonb,
   sizes jsonb not null default '[]'::jsonb,
   variants jsonb not null default '[]'::jsonb,
@@ -76,6 +77,8 @@ create table if not exists public.orders (
   id uuid primary key default gen_random_uuid(),
   items jsonb not null default '[]'::jsonb,
   subtotal numeric(12,2) not null default 0 check (subtotal >= 0),
+  customer_name text,
+  customer_whatsapp text,
   whatsapp_message text not null default '',
   status text not null default 'whatsapp' check (status in ('whatsapp', 'contacted', 'completed', 'cancelled')),
   stock_deducted boolean not null default false,
@@ -88,6 +91,15 @@ alter table public.orders
 
 alter table public.orders
   add column if not exists completed_at timestamptz;
+
+alter table public.orders
+  add column if not exists customer_name text;
+
+alter table public.orders
+  add column if not exists customer_whatsapp text;
+
+alter table public.products
+  add column if not exists pix_discount_percent numeric check (pix_discount_percent is null or pix_discount_percent >= 0);
 
 create index if not exists products_active_idx on public.products(is_active);
 create index if not exists products_category_idx on public.products(category_id);

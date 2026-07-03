@@ -1,8 +1,12 @@
 import type { AdminSession, CartItem, Category, HomeBanner, Order, OrderItem, Product, ProductBadge, ProductColor, ProductImage, ProductVariant, SiteSettings } from '@/types';
-import { INVENTORY_SYNC_WARNING, syncInventoryProduct } from '@/lib/inventorySync';
+import { INVENTORY_DEACTIVATE_WARNING, INVENTORY_SYNC_WARNING, deactivateInventoryProduct, syncInventoryProduct } from '@/lib/inventorySync';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAILS || '')
+  .split(',')
+  .map((email: string) => email.trim().toLowerCase())
+  .filter(Boolean);
 
 const PRODUCT_CACHE_KEY = 'frazon_catalog_products_cache_v1';
 const CATEGORY_CACHE_KEY = 'frazon_catalog_categories_cache_v1';
@@ -164,6 +168,23 @@ export function formatPrice(value: number): string {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number.isFinite(value) ? value : 0);
 }
 
+export function normalizePixDiscountPercent(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+export function formatPixDiscountPercent(value: unknown): string {
+  const discount = normalizePixDiscountPercent(value);
+  if (!discount) return '';
+  return new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 }).format(discount);
+}
+
+export function formatPixDiscountBadge(value: unknown): string {
+  const percent = formatPixDiscountPercent(value);
+  return percent ? `-${percent}% PIX` : '';
+}
+
 export function normalizeWhatsapp(number: string): string {
   return number.replace(/\D/g, '');
 }
@@ -240,6 +261,7 @@ type ProductRow = {
   description: string | null;
   price: number | string;
   original_price: number | string | null;
+  pix_discount_percent?: number | string | null;
   colors: ProductColor[] | null;
   sizes: string[] | null;
   variants: ProductVariant[] | null;
@@ -300,6 +322,8 @@ type OrderRow = {
   id: string;
   items: OrderItem[] | null;
   subtotal: number | string | null;
+  customer_name?: string | null;
+  customer_whatsapp?: string | null;
   whatsapp_message: string | null;
   status: Order['status'] | null;
   stock_deducted?: boolean | null;
@@ -325,6 +349,7 @@ function rowToProduct(row: ProductRow): Product {
     description: row.description || '',
     price: Number(row.price) || 0,
     originalPrice: row.original_price ? Number(row.original_price) : undefined,
+    pixDiscountPercent: normalizePixDiscountPercent(row.pix_discount_percent),
     colors,
     sizes,
     variants,
@@ -346,6 +371,7 @@ function productToRow(product: Omit<Product, 'id' | 'createdAt' | 'updatedAt'> |
   if (product.description !== undefined) row.description = product.description;
   if (product.price !== undefined) row.price = Number(product.price) || 0;
   if (product.originalPrice !== undefined) row.original_price = product.originalPrice ? Number(product.originalPrice) : null;
+  if (product.pixDiscountPercent !== undefined) row.pix_discount_percent = normalizePixDiscountPercent(product.pixDiscountPercent) ?? null;
   if (product.colors !== undefined) row.colors = product.colors;
   if (product.sizes !== undefined) row.sizes = product.sizes;
   if (product.variants !== undefined) row.variants = sanitizeVariants(product.variants);
@@ -372,7 +398,7 @@ function categoryToRow(category: Partial<Category>): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   if (category.name !== undefined) row.name = category.name.trim();
   if (category.slug !== undefined) row.slug = category.slug;
-  if (category.imageUrl !== undefined) row.image_url = category.imageUrl || null;
+  if (category.imageUrl !== undefined) row.image_url = sanitizeStoredImageUrl(category.imageUrl) || null;
   if (category.isActive !== undefined) row.is_active = category.isActive;
   if (category.sortOrder !== undefined) row.sort_order = Number(category.sortOrder) || 0;
   row.updated_at = new Date().toISOString();
@@ -399,7 +425,7 @@ function sanitizeStoredImageUrl(value: unknown): string {
   const url = value.trim();
   if (!url) return '';
   const lower = url.slice(0, 32).toLowerCase();
-  if (lower.startsWith('data:') || lower.startsWith('blob:')) return '';
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
   if (url.length > 2048) return '';
   if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/')) return url;
   return '';
@@ -410,7 +436,7 @@ function sanitizeStoredBannerLink(value: unknown): string {
   const url = value.trim();
   if (!url) return '';
   const lower = url.slice(0, 32).toLowerCase();
-  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:')) return '';
+  if (lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
   if (url.length > 2048) return '';
   if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url;
   return '';
@@ -431,6 +457,7 @@ function normalizeProductImages(value: unknown): ProductImage[] {
       }
       return { url: '', color: '' };
     })
+    .map(image => ({ ...image, url: sanitizeStoredImageUrl(image.url) }))
     .filter(image => image.url);
 }
 
@@ -462,9 +489,9 @@ function rowToSettings(row?: SettingsRow): SiteSettings {
     heroTitle: row.hero_title || defaultSettings.heroTitle,
     heroItalicTitle: row.hero_italic_title || defaultSettings.heroItalicTitle,
     heroSubtitle: row.hero_subtitle || defaultSettings.heroSubtitle,
-    heroImage: row.hero_image || '',
-    heroImageMobile: row.hero_image_mobile || defaultSettings.heroImageMobile,
-    heroImageDesktop: row.hero_image_desktop || defaultSettings.heroImageDesktop,
+    heroImage: sanitizeStoredImageUrl(row.hero_image),
+    heroImageMobile: sanitizeStoredImageUrl(row.hero_image_mobile) || defaultSettings.heroImageMobile,
+    heroImageDesktop: sanitizeStoredImageUrl(row.hero_image_desktop) || defaultSettings.heroImageDesktop,
     heroTitleLine1: row.hero_title_line_1 || defaultSettings.heroTitleLine1,
     heroTitleLine2: row.hero_title_line_2 || defaultSettings.heroTitleLine2,
     heroSubtitleLine1: row.hero_subtitle_line_1 || defaultSettings.heroSubtitleLine1,
@@ -482,8 +509,8 @@ function rowToSettings(row?: SettingsRow): SiteSettings {
     editorialTitle: row.editorial_title || defaultSettings.editorialTitle,
     editorialItalicTitle: row.editorial_italic_title || defaultSettings.editorialItalicTitle,
     editorialText: row.editorial_text || defaultSettings.editorialText,
-    editorialImage: row.editorial_image || '',
-    instagramUrl: row.instagram_url || '',
+    editorialImage: sanitizeStoredImageUrl(row.editorial_image),
+    instagramUrl: sanitizeStoredBannerLink(row.instagram_url),
     email: row.email || '',
     address: row.address || defaultSettings.address,
     weekHours: row.week_hours || defaultSettings.weekHours,
@@ -522,7 +549,7 @@ function settingsToRow(settings: SiteSettings): Record<string, unknown> {
     editorial_italic_title: settings.editorialItalicTitle,
     editorial_text: settings.editorialText,
     editorial_image: sanitizeStoredImageUrl(settings.editorialImage),
-    instagram_url: settings.instagramUrl,
+    instagram_url: sanitizeStoredBannerLink(settings.instagramUrl),
     email: settings.email,
     address: settings.address,
     week_hours: settings.weekHours,
@@ -968,26 +995,36 @@ export function getSettings(): SiteSettings {
 
 export async function loginAdmin(email: string, password: string): Promise<AdminSession> {
   if (!hasSupabaseConfig()) throw new Error('Configure o Supabase antes de usar o admin seguro.');
+  const requestedEmail = email.trim().toLowerCase();
   const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: {
       apikey: SUPABASE_ANON_KEY,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: requestedEmail, password }),
   });
 
   if (!response.ok) throw new Error('E-mail ou senha inválidos.');
   const data = await response.json() as { access_token: string; refresh_token?: string; expires_in: number; user?: { email?: string } };
+  const authenticatedEmail = (data.user?.email || requestedEmail).trim().toLowerCase();
+  if (!isAllowedAdminEmail(authenticatedEmail)) {
+    throw new Error('Este e-mail nÃ£o estÃ¡ autorizado a acessar o painel administrativo.');
+  }
   const session: AdminSession = {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
     expiresAt: Date.now() + Math.max(0, data.expires_in - 60) * 1000,
-    email: data.user?.email || email,
+    email: authenticatedEmail,
   };
   adminSessionCache = session;
   clearLegacyAdminSessionStorage();
   return session;
+}
+
+function isAllowedAdminEmail(email: string): boolean {
+  if (!ADMIN_EMAILS.length) return true;
+  return ADMIN_EMAILS.includes(email.trim().toLowerCase());
 }
 
 export function logoutAdmin(): void {
@@ -1032,6 +1069,7 @@ export async function deleteProduct(id: string): Promise<void> {
   await supabaseFetch<void>(`/rest/v1/products?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' }, true);
   productsCache = productsCache.filter(product => product.id !== id);
   writeStorage(PRODUCT_CACHE_KEY, productsCache);
+  await tryDeactivateInventoryProduct(id);
 }
 
 async function trySyncInventoryProduct(product: Product): Promise<void> {
@@ -1048,6 +1086,23 @@ async function trySyncInventoryProduct(product: Product): Promise<void> {
     console.error('[INVENTORY PRODUCT SYNC ERROR]', error);
     const details = error instanceof Error ? error.message : '';
     inventorySyncWarning = details ? `${INVENTORY_SYNC_WARNING} ${details}` : INVENTORY_SYNC_WARNING;
+  }
+}
+
+async function tryDeactivateInventoryProduct(productId: string): Promise<void> {
+  inventorySyncWarning = '';
+  const session = getSession();
+  if (!session?.accessToken) {
+    inventorySyncWarning = INVENTORY_DEACTIVATE_WARNING;
+    return;
+  }
+
+  try {
+    await deactivateInventoryProduct(productId, session.accessToken);
+  } catch (error) {
+    console.error('[INVENTORY PRODUCT DEACTIVATE ERROR]', error);
+    const details = error instanceof Error ? error.message : '';
+    inventorySyncWarning = details ? `${INVENTORY_DEACTIVATE_WARNING} ${details}` : INVENTORY_DEACTIVATE_WARNING;
   }
 }
 
@@ -1097,6 +1152,8 @@ export async function listOrders(): Promise<Order[]> {
     id: row.id,
     items: Array.isArray(row.items) ? row.items : [],
     subtotal: Number(row.subtotal) || 0,
+    customerName: row.customer_name || undefined,
+    customerWhatsapp: row.customer_whatsapp || undefined,
     whatsappMessage: row.whatsapp_message || '',
     status: row.status || 'whatsapp',
     stockDeducted: row.stock_deducted === true,
@@ -1132,39 +1189,65 @@ export async function createOrder(
   customer: { customerName: string; customerWhatsapp: string },
 ): Promise<{ order: Order; message: string; whatsappUrl: string }> {
   const settings = getSettings();
+  if (!Array.isArray(items) || !items.length) throw new Error('Adicione pelo menos um produto ao carrinho.');
+
   const orderItems: OrderItem[] = items.map(item => {
     const product = getProductById(item.productId);
+    const quantity = Math.floor(Number(item.quantity) || 0);
+    const stock = product ? getVariantStock(product, item.color, item.size) : 0;
+    if (!product || quantity <= 0 || quantity > stock || quantity > 99) return null;
     const unitPrice = product?.price || 0;
     return {
       productId: item.productId,
       productName: product?.name || 'Produto removido',
       color: item.color,
       size: item.size,
-      quantity: item.quantity,
+      quantity,
       unitPrice,
-      subtotal: unitPrice * item.quantity,
+      subtotal: unitPrice * quantity,
+      pixDiscountPercent: product?.pixDiscountPercent,
       image: getProductImageUrl(product?.images[0]),
     };
-  }).filter(item => item.unitPrice > 0);
+  }).filter((item): item is OrderItem => Boolean(item && item.unitPrice > 0));
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
   const orderNumber = generateOrderNumber();
-  const message = buildWhatsappMessage(orderItems, subtotal, customer.customerName, customer.customerWhatsapp, orderNumber);
+  const customerName = customer.customerName.trim().replace(/\s+/g, ' ').slice(0, 80);
+  const customerWhatsapp = normalizeWhatsapp(customer.customerWhatsapp);
+  if (!orderItems.length) throw new Error('Seu carrinho nÃ£o possui itens disponÃ­veis para finalizar.');
+  if (!customerName) throw new Error('Informe seu nome para finalizar o pedido.');
+  if (customerWhatsapp.length < 10 || customerWhatsapp.length > 15) throw new Error('Informe um WhatsApp vÃ¡lido para finalizar o pedido.');
+
+  const message = buildWhatsappMessage(orderItems, subtotal, customerName, customerWhatsapp, orderNumber);
   let order: Order = {
     id: `local-${Date.now()}`,
     items: orderItems,
     subtotal,
+    customerName,
+    customerWhatsapp,
     whatsappMessage: message,
     status: 'whatsapp',
     createdAt: new Date().toISOString(),
   };
 
   if (hasSupabaseConfig()) {
-    await supabaseFetch<void>('/rest/v1/orders', {
-      method: 'POST',
-      headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ items: orderItems, subtotal, whatsapp_message: message, status: 'whatsapp' }),
-    });
+    try {
+      await supabaseFetch<void>('/rest/v1/orders', {
+        method: 'POST',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          items: orderItems,
+          subtotal,
+          customer_name: customerName,
+          customer_whatsapp: customerWhatsapp,
+          whatsapp_message: message,
+          status: 'whatsapp',
+        }),
+      });
+    } catch (error) {
+      console.error('[FRAZON ORDER CREATE ERROR]', error);
+      throw new Error('NÃ£o foi possÃ­vel registrar o pedido. Tente novamente em instantes.');
+    }
   }
 
   return {
@@ -1196,9 +1279,10 @@ export function buildWhatsappMessage(
   const orderItems = items.map(item => [
     `${PIN} ${item.quantity}x ${item.productName.toUpperCase()}`,
     `Tam: ${item.size} \u2022 ${item.color}`,
-    `Valor un.: ${formatPrice(item.unitPrice)}`,
+    `Valor: ${formatPrice(item.unitPrice)}`,
+    formatPixDiscountPercent(item.pixDiscountPercent) ? `Pix: -${formatPixDiscountPercent(item.pixDiscountPercent)}%` : '',
     `Subtotal: ${formatPrice(item.subtotal)}`,
-  ].join('\n')).join('\n\n');
+  ].filter(Boolean).join('\n')).join('\n\n');
 
   return [
     `${SPARKLES} NOVO PEDIDO #${orderNumber} ${SPARKLES}`,
@@ -1228,9 +1312,12 @@ export function buildWhatsappMessage(
   ].join('\n');
 }
 
-async function compressImage(file: File): Promise<Blob> {
-  const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-  if (!allowedTypes.has(file.type)) throw new Error('Envie apenas imagens JPG, PNG ou WEBP.');
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const ALLOWED_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
+const DEFAULT_IMAGE_MAX_SIZE = 5 * 1024 * 1024;
+
+async function compressImage(file: File, maxSizeBytes = DEFAULT_IMAGE_MAX_SIZE): Promise<Blob> {
+  validateImageFile(file, maxSizeBytes);
   if (file.size > 5 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 5MB.');
   if (file.size <= 900_000) return file;
 
@@ -1248,20 +1335,36 @@ async function compressImage(file: File): Promise<Blob> {
   });
 }
 
-function validateOriginalImage(file: File): File {
-  const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-  if (!allowedTypes.has(file.type)) throw new Error('Envie apenas imagens JPG, PNG ou WEBP.');
-  if (file.size > 5 * 1024 * 1024) throw new Error('A imagem deve ter no mÃ¡ximo 5MB.');
+function validateOriginalImage(file: File, maxSizeBytes = DEFAULT_IMAGE_MAX_SIZE): File {
+  validateImageFile(file, maxSizeBytes);
   return file;
 }
 
-export async function uploadCatalogImage(file: File, folder: 'products' | 'categories' | 'site' = 'products', options: { preserveOriginal?: boolean } = {}): Promise<string> {
+function validateImageFile(file: File, maxSizeBytes: number): void {
+  if (!ALLOWED_IMAGE_TYPES.has(file.type)) throw new Error('Envie apenas imagens JPG, PNG ou WEBP.');
+  const extension = getFileExtension(file.name);
+  if (!ALLOWED_IMAGE_EXTENSIONS.has(extension)) throw new Error('A extensÃ£o da imagem deve ser JPG, PNG ou WEBP.');
+  if (file.size > maxSizeBytes) throw new Error(`A imagem deve ter no mÃ¡ximo ${Math.floor(maxSizeBytes / (1024 * 1024))}MB.`);
+}
+
+function getFileExtension(fileName: string): string {
+  const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] || '';
+}
+
+function safeUploadBaseName(fileName: string): string {
+  const baseName = fileName.replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/(^-|-$)/g, '').toLowerCase();
+  return baseName.slice(0, 48) || 'imagem';
+}
+
+export async function uploadCatalogImage(file: File, folder: 'products' | 'categories' | 'site' = 'products', options: { preserveOriginal?: boolean; maxSizeBytes?: number } = {}): Promise<string> {
   if (!hasSupabaseConfig()) throw new Error('Configure o Supabase Storage antes de subir imagens.');
   const session = getSession();
   if (!session) throw new Error('Sessão expirada. Faça login novamente.');
-  const blob = options.preserveOriginal ? validateOriginalImage(file) : await compressImage(file);
+  const maxSizeBytes = options.maxSizeBytes || DEFAULT_IMAGE_MAX_SIZE;
+  const blob = options.preserveOriginal ? validateOriginalImage(file, maxSizeBytes) : await compressImage(file, maxSizeBytes);
   const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
-  const safeName = file.name.replace(/[^a-z0-9.]+/gi, '-').toLowerCase().slice(0, 60);
+  const safeName = safeUploadBaseName(file.name);
   const path = `${folder}/${Date.now()}-${crypto.randomUUID()}-${safeName}.${ext}`;
   const response = await fetch(`${SUPABASE_URL}/storage/v1/object/product-images/${path}`, {
     method: 'POST',

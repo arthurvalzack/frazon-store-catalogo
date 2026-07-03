@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShoppingBag } from 'lucide-react';
 import type { Product } from '@/types';
-import { fallbackImage, formatPrice, getAvailableColors, getAvailableSizes, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
+import { fallbackImage, formatPixDiscountBadge, formatPrice, getAvailableColors, getAvailableSizes, getProductImageForColor, getProductImageUrl, getVariantStock } from '@/lib/data';
 import { useCart } from '@/context/CartContext';
 import { cn } from '@/utils/cn';
 
@@ -24,6 +24,7 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
   const { addItem } = useCart();
   const stock = getVariantStock(product, selectedColor, selectedSize);
   const productImage = getProductImageForColor(product, selectedColor) || product.images[0];
+  const pixDiscountBadge = formatPixDiscountBadge(product.pixDiscountPercent);
 
   const handleAddToCart = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -95,8 +96,9 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-semibold text-noir-900">{formatPrice(product.price)}</span>
-            {product.originalPrice && <span className="text-xs text-noir-300 line-through">{formatPrice(product.originalPrice)}</span>}
+            {pixDiscountBadge && <span className="rounded bg-gold-400 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-[0.04em] text-noir-900">{pixDiscountBadge}</span>}
           </div>
+          {product.originalPrice && <p className="text-xs text-noir-300 line-through">{formatPrice(product.originalPrice)}</p>}
           <div className="flex flex-wrap gap-1 pt-1">
             {availableSizes.map(size => (
               <span key={size} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSelectedSize(size); }} className={cn('cursor-pointer border px-1.5 py-0.5 text-[10px] transition-colors', selectedSize === size ? 'border-noir-900 bg-noir-900 text-white' : 'border-noir-200 text-noir-400')}>
