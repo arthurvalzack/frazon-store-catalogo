@@ -1,5 +1,6 @@
 import type { AdminSession, CartItem, Category, HomeBanner, Order, OrderItem, Product, ProductBadge, ProductColor, ProductImage, ProductVariant, SiteSettings } from '@/types';
 import { INVENTORY_DEACTIVATE_WARNING, INVENTORY_SYNC_WARNING, deactivateInventoryProduct, syncInventoryProduct } from '@/lib/inventorySync';
+import { getMetaAttribution } from '@/lib/metaPixel';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -328,8 +329,41 @@ type OrderRow = {
   status: Order['status'] | null;
   stock_deducted?: boolean | null;
   completed_at?: string | null;
+  marketing_consent?: boolean | null;
+  meta_initiate_checkout_event_id?: string | null;
+  meta_initiate_checkout_sent_at?: string | null;
+  meta_purchase_event_id?: string | null;
+  meta_purchase_sent_at?: string | null;
+  meta_purchase_last_error?: string | null;
   created_at: string | null;
 };
+
+type PublicOrderRpcRow = {
+  order_id: string;
+  items: OrderItem[] | null;
+  subtotal: number | string;
+  created_at: string;
+  initiate_checkout_event_id: string | null;
+};
+
+function rowToOrder(row: OrderRow): Order {
+  return {
+    id: row.id, items: Array.isArray(row.items) ? row.items : [],
+    subtotal: Number(row.subtotal) || 0,
+    customerName: row.customer_name || undefined,
+    customerWhatsapp: row.customer_whatsapp || undefined,
+    whatsappMessage: row.whatsapp_message || '', status: row.status || 'whatsapp',
+    stockDeducted: row.stock_deducted === true,
+    completedAt: row.completed_at || undefined,
+    marketingConsent: row.marketing_consent === true,
+    metaInitiateCheckoutEventId: row.meta_initiate_checkout_event_id || undefined,
+    metaInitiateCheckoutSentAt: row.meta_initiate_checkout_sent_at || undefined,
+    metaPurchaseEventId: row.meta_purchase_event_id || undefined,
+    metaPurchaseSentAt: row.meta_purchase_sent_at || undefined,
+    metaPurchaseLastError: row.meta_purchase_last_error || undefined,
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+}
 
 function rowToProduct(row: ProductRow): Product {
   const variants = Array.isArray(row.variants) ? row.variants : [];
@@ -1009,7 +1043,7 @@ export async function loginAdmin(email: string, password: string): Promise<Admin
   const data = await response.json() as { access_token: string; refresh_token?: string; expires_in: number; user?: { email?: string } };
   const authenticatedEmail = (data.user?.email || requestedEmail).trim().toLowerCase();
   if (!isAllowedAdminEmail(authenticatedEmail)) {
-    throw new Error('Este e-mail nÃ£o estÃ¡ autorizado a acessar o painel administrativo.');
+    throw new Error('Este e-mail não está autorizado a acessar o painel administrativo.');
   }
   const session: AdminSession = {
     accessToken: data.access_token,
@@ -1148,18 +1182,19 @@ export async function saveSettings(settings: SiteSettings): Promise<SiteSettings
 
 export async function listOrders(): Promise<Order[]> {
   const rows = await supabaseFetch<OrderRow[]>('/rest/v1/orders?select=*&order=created_at.desc&limit=100', {}, true);
-  return rows.map(row => ({
-    id: row.id,
-    items: Array.isArray(row.items) ? row.items : [],
-    subtotal: Number(row.subtotal) || 0,
-    customerName: row.customer_name || undefined,
-    customerWhatsapp: row.customer_whatsapp || undefined,
-    whatsappMessage: row.whatsapp_message || '',
-    status: row.status || 'whatsapp',
-    stockDeducted: row.stock_deducted === true,
-    completedAt: row.completed_at || undefined,
-    createdAt: row.created_at || new Date().toISOString(),
-  }));
+  return rows.map(rowToOrder);
+}
+
+export async function sendMetaConversion(eventName: 'InitiateCheckout' | 'Purchase', orderId: string, eventId: string, admin = false): Promise<void> {
+  if (!hasSupabaseConfig()) return;
+  const session = admin ? getSession() : null;
+  if (admin && !session) throw new Error('Sessão expirada. Faça login novamente.');
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/meta-conversions`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: authHeader(session?.accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventName, orderId, eventId }),
+  });
+  if (!response.ok) throw new Error('O evento da Meta ficou pendente para reenvio.');
 }
 
 export async function confirmOrderSale(orderId: string): Promise<void> {
@@ -1191,64 +1226,116 @@ export async function createOrder(
   const settings = getSettings();
   if (!Array.isArray(items) || !items.length) throw new Error('Adicione pelo menos um produto ao carrinho.');
 
-  const orderItems: OrderItem[] = items.map(item => {
-    const product = getProductById(item.productId);
-    const quantity = Math.floor(Number(item.quantity) || 0);
-    const stock = product ? getVariantStock(product, item.color, item.size) : 0;
-    if (!product || quantity <= 0 || quantity > stock || quantity > 99) return null;
-    const unitPrice = product?.price || 0;
-    return {
-      productId: item.productId,
-      productName: product?.name || 'Produto removido',
-      color: item.color,
-      size: item.size,
-      quantity,
-      unitPrice,
-      subtotal: unitPrice * quantity,
-      pixDiscountPercent: product?.pixDiscountPercent,
-      image: getProductImageUrl(product?.images[0]),
-    };
-  }).filter((item): item is OrderItem => Boolean(item && item.unitPrice > 0));
+  const orderItems = items.reduce<OrderItem[]>((validItems, item) => {
+  const product = getProductById(item.productId);
+  const quantity = Math.floor(Number(item.quantity) || 0);
+
+  if (!product || quantity <= 0 || quantity > 99) {
+    return validItems;
+  }
+
+  const stock = getVariantStock(
+    product,
+    item.color,
+    item.size
+  );
+
+  const unitPrice = Number(product.price) || 0;
+
+  if (
+    stock <= 0 ||
+    quantity > stock ||
+    unitPrice <= 0
+  ) {
+    return validItems;
+  }
+
+  const orderItem: OrderItem = {
+    productId: item.productId,
+    productName: product.name || "Produto removido",
+    color: item.color,
+    size: item.size,
+    quantity,
+    unitPrice,
+    subtotal: unitPrice * quantity,
+    pixDiscountPercent: product.pixDiscountPercent,
+    image: getProductImageUrl(product.images[0]),
+  };
+
+  validItems.push(orderItem);
+
+  return validItems;
+}, []);
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
-  const orderNumber = generateOrderNumber();
   const customerName = customer.customerName.trim().replace(/\s+/g, ' ').slice(0, 80);
   const customerWhatsapp = normalizeWhatsapp(customer.customerWhatsapp);
-  if (!orderItems.length) throw new Error('Seu carrinho nÃ£o possui itens disponÃ­veis para finalizar.');
+  if (!orderItems.length) throw new Error('Seu carrinho não possui itens disponíveis para finalizar.');
   if (!customerName) throw new Error('Informe seu nome para finalizar o pedido.');
-  if (customerWhatsapp.length < 10 || customerWhatsapp.length > 15) throw new Error('Informe um WhatsApp vÃ¡lido para finalizar o pedido.');
+  if (customerWhatsapp.length < 10 || customerWhatsapp.length > 15) throw new Error('Informe um WhatsApp válido para finalizar o pedido.');
 
-  const message = buildWhatsappMessage(orderItems, subtotal, customerName, customerWhatsapp, orderNumber);
+  const attribution = getMetaAttribution();
   let order: Order = {
     id: `local-${Date.now()}`,
     items: orderItems,
     subtotal,
     customerName,
     customerWhatsapp,
-    whatsappMessage: message,
+    whatsappMessage: '',
     status: 'whatsapp',
     createdAt: new Date().toISOString(),
   };
 
   if (hasSupabaseConfig()) {
     try {
-      await supabaseFetch<void>('/rest/v1/orders', {
+      const rows = await supabaseFetch<PublicOrderRpcRow[]>('/rest/v1/rpc/create_public_order', {
         method: 'POST',
-        headers: { Prefer: 'return=minimal' },
         body: JSON.stringify({
-          items: orderItems,
-          subtotal,
-          customer_name: customerName,
-          customer_whatsapp: customerWhatsapp,
-          whatsapp_message: message,
-          status: 'whatsapp',
+          p_items: items.map(item => ({
+            productId: item.productId,
+            color: item.color,
+            size: item.size,
+            quantity: item.quantity,
+          })),
+          p_customer_name: customerName,
+          p_customer_whatsapp: customerWhatsapp,
+          p_marketing_consent: attribution.marketingConsent,
+          p_meta_fbp: attribution.fbp,
+          p_meta_fbc: attribution.fbc,
+          p_event_source_url: attribution.eventSourceUrl,
+          p_client_user_agent: attribution.clientUserAgent,
         }),
       });
+      const row = rows[0];
+      if (rows.length !== 1 || !row?.order_id || !Array.isArray(row.items)) {
+        throw new Error('O Supabase não retornou exatamente um pedido válido.');
+      }
+      order = {
+        id: row.order_id,
+        items: row.items,
+        subtotal: Number(row.subtotal) || 0,
+        customerName,
+        customerWhatsapp,
+        whatsappMessage: '',
+        status: 'whatsapp',
+        marketingConsent: attribution.marketingConsent,
+        metaInitiateCheckoutEventId: row.initiate_checkout_event_id || undefined,
+        createdAt: row.created_at,
+      };
     } catch (error) {
       console.error('[FRAZON ORDER CREATE ERROR]', error);
-      throw new Error('NÃ£o foi possÃ­vel registrar o pedido. Tente novamente em instantes.');
+      throw new Error('Não foi possível registrar o pedido. Tente novamente em instantes.');
     }
   }
+
+  const message = buildWhatsappMessage(
+    order.items,
+    order.subtotal,
+    customerName,
+    customerWhatsapp,
+    generateOrderNumber(),
+  );
+  order.whatsappMessage = message;
 
   return {
     order,
@@ -1343,7 +1430,7 @@ function validateOriginalImage(file: File, maxSizeBytes = DEFAULT_IMAGE_MAX_SIZE
 function validateImageFile(file: File, maxSizeBytes: number): void {
   if (!ALLOWED_IMAGE_TYPES.has(file.type)) throw new Error('Envie apenas imagens JPG, PNG ou WEBP.');
   const extension = getFileExtension(file.name);
-  if (!ALLOWED_IMAGE_EXTENSIONS.has(extension)) throw new Error('A extensÃ£o da imagem deve ser JPG, PNG ou WEBP.');
+  if (!ALLOWED_IMAGE_EXTENSIONS.has(extension)) throw new Error('A extensão da imagem deve ser JPG, PNG ou WEBP.');
   if (file.size > maxSizeBytes) throw new Error(`A imagem deve ter no mÃ¡ximo ${Math.floor(maxSizeBytes / (1024 * 1024))}MB.`);
 }
 

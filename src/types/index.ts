@@ -120,6 +120,12 @@ export interface Order {
   status: 'whatsapp' | 'pending' | 'contacted' | 'completed' | 'completed_sale' | 'cancelled';
   stockDeducted?: boolean;
   completedAt?: string;
+  marketingConsent?: boolean;
+  metaInitiateCheckoutEventId?: string;
+  metaInitiateCheckoutSentAt?: string;
+  metaPurchaseEventId?: string;
+  metaPurchaseSentAt?: string;
+  metaPurchaseLastError?: string;
   createdAt: string;
 }
 

@@ -7,6 +7,7 @@ import { cn } from '@/utils/cn';
 import { fallbackImage, findProductImageIndexByColor, formatPixDiscountBadge, formatPrice, getActiveProducts, getAvailableColors, getAvailableSizes, getProductBySlug, getProductImageUrl, getVariantStock, isProductAvailable, loadCatalogData, subscribeToProductsChanges } from '@/lib/data';
 import { useCart } from '@/context/CartContext';
 import type { Product } from '@/types';
+import { trackViewContent } from "@/lib/metaPixel";
 
 export default function ProductDetail() {
   const { slug } = useParams<{ slug: string }>();
@@ -61,9 +62,22 @@ export default function ProductDetail() {
   }, [slug]);
 
   useEffect(() => {
-    if (!slug) return undefined;
-    return subscribeToProductsChanges(handleProductsRealtimeChange);
-  }, [handleProductsRealtimeChange, slug]);
+  if (!slug) return undefined;
+  return subscribeToProductsChanges(handleProductsRealtimeChange);
+}, [handleProductsRealtimeChange, slug]);
+
+useEffect(() => {
+  if (!product) {
+    return;
+  }
+
+  trackViewContent({
+    id: product.id,
+    name: product.name,
+    price: product.price,
+    category: product.category ?? null,
+  });
+}, [product]);
 
   const availableColors = useMemo(() => product ? getAvailableColors(product) : [], [product]);
   const availableSizes = useMemo(() => product ? getAvailableSizes(product, selectedColor) : [], [product, selectedColor]);

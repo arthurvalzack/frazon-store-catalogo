@@ -22,7 +22,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
   select exists (
     select 1
@@ -48,7 +48,6 @@ revoke all on table public.site_settings from public, anon, authenticated;
 grant select on table public.products to anon, authenticated;
 grant select on table public.categories to anon, authenticated;
 grant select on table public.site_settings to anon, authenticated;
-grant insert on table public.orders to anon, authenticated;
 
 grant select, insert, update, delete on table public.products to authenticated;
 grant select, insert, update, delete on table public.categories to authenticated;
@@ -102,17 +101,6 @@ drop policy if exists "Authenticated can delete orders" on public.orders;
 drop policy if exists "Admins can read orders" on public.orders;
 drop policy if exists "Admins can update orders" on public.orders;
 drop policy if exists "Admins can delete orders" on public.orders;
-
-create policy "Public can create orders" on public.orders
-  for insert to anon, authenticated
-  with check (
-    status = 'whatsapp'
-    and coalesce(stock_deducted, false) = false
-    and completed_at is null
-    and jsonb_typeof(items) = 'array'
-    and jsonb_array_length(items) between 1 and 50
-    and subtotal >= 0
-  );
 
 create policy "Admins can read orders" on public.orders
   for select to authenticated

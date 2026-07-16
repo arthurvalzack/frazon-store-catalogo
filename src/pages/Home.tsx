@@ -18,7 +18,7 @@ import {
   normalizeWhatsapp,
   subscribeToCatalogDataChanges,
 } from '@/lib/data';
-import type { Category, HomeBanner, Product, SiteSettings } from '@/types';
+import type { Category, Product, SiteSettings } from "@/types";
 import { cn } from '@/utils/cn';
 
 export default function Home() {

@@ -101,6 +101,29 @@ alter table public.orders
 alter table public.products
   add column if not exists pix_discount_percent numeric check (pix_discount_percent is null or pix_discount_percent >= 0);
 
+create table if not exists public.admin_users (
+  email text primary key,
+  created_at timestamptz not null default now()
+);
+
+alter table public.admin_users enable row level security;
+
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.admin_users
+    where lower(email) = lower(coalesce(auth.jwt() ->> 'email', ''))
+  );
+$$;
+
+revoke all on function public.is_admin() from public;
+grant execute on function public.is_admin() to anon, authenticated;
+
 create index if not exists products_active_idx on public.products(is_active);
 create index if not exists products_category_idx on public.products(category_id);
 create index if not exists orders_created_at_idx on public.orders(created_at desc);
@@ -152,7 +175,7 @@ create or replace function public.confirm_order_sale(order_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
   order_record public.orders%rowtype;
@@ -163,7 +186,7 @@ declare
   requested_quantity integer;
   updated_variants jsonb;
 begin
-  if auth.role() <> 'authenticated' then
+  if not public.is_admin() then
     raise exception 'Acesso negado.';
   end if;
 
@@ -181,7 +204,7 @@ begin
     raise exception 'Pedido cancelado não pode ser confirmado.';
   end if;
 
-  if order_record.status = 'completed' or coalesce(order_record.stock_deducted, false) then
+  if order_record.status = 'completed' and coalesce(order_record.stock_deducted, false) then
     return;
   end if;
 

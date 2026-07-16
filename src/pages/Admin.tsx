@@ -4,7 +4,7 @@ import { BarChart3, Boxes, Camera, Edit2, Image, ListOrdered, LogOut, MessageCir
 import type { AdminSession, Category, HomeBanner, Order, Product, ProductBadge, ProductImage, ProductVariant, SiteSettings } from '@/types';
 import { PRODUCT_COLORS, SIZES } from '@/types';
 import { cn } from '@/utils/cn';
-import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getProductImageUrl, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, normalizeWhatsapp, saveSettings, subscribeToOrdersChanges, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
+import { cancelOrder, confirmOrderSale, consumeInventorySyncWarning, createCategory, createProduct, deleteCategory, deleteOrder, deleteProduct, formatPrice, generateSlug, getAdminSession, getProductImageUrl, getSettings, isSupabaseConfigured, listOrders, loadCatalogData, loginAdmin, logoutAdmin, normalizeWhatsapp, saveSettings, sendMetaConversion, subscribeToOrdersChanges, subscribeToProductsChanges, updateCategory, updateProduct, uploadCatalogImage } from '@/lib/data';
 import { syncAllInventoryProducts, type InventoryBulkSyncResult } from '@/lib/inventorySync';
 
 type AdminTab = 'products' | 'categories' | 'site' | 'orders';
@@ -410,13 +410,20 @@ export default function Admin() {
   }
 
   async function handleConfirmOrder(order: Order) {
-    if (order.stockDeducted || order.status === 'completed' || order.status === 'completed_sale') return;
+    const alreadyCompleted = order.stockDeducted || order.status === 'completed' || order.status === 'completed_sale';
     setLoading(true);
     setError('');
     try {
-      await confirmOrderSale(order.id);
-      await refreshData();
-      showToast('Venda confirmada e estoque atualizado.');
+      if (!alreadyCompleted) {
+        await confirmOrderSale(order.id);
+        await refreshData();
+      }
+      try {
+        await sendMetaConversion('Purchase', order.id, `purchase-${order.id}`, true);
+        showToast(alreadyCompleted ? 'Evento da Meta enviado ou já processado.' : 'Venda confirmada, estoque atualizado e evento da Meta enviado.');
+      } catch {
+        showToast(alreadyCompleted ? 'O evento da Meta continua pendente.' : 'Venda confirmada e estoque atualizado. O evento da Meta está pendente.');
+      }
     } catch (confirmError) {
       setError(confirmError instanceof Error ? confirmError.message : 'Erro ao confirmar venda.');
     } finally {
@@ -997,9 +1004,7 @@ function ImageInput({ value, onChange, onFile }: { value: string; onChange: (val
   return <div className="flex gap-2"><input value={value} onChange={event => onChange(event.target.value)} className={inputClass} /><label className="flex cursor-pointer items-center gap-2 bg-noir-900 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white"><Image className="h-4 w-4" /><input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={event => onFile(event.target.files?.[0])} /></label></div>;
 }
 
-function OrdersPanel({ orders, onRefresh }: { orders: Order[]; onRefresh: () => void }) {
-  return <section className="rounded-xl border border-noir-100 bg-white p-4 sm:p-6"><div className="mb-5 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-noir-900">Pedidos salvos</h2><p className="text-sm text-noir-400">Pedidos são registrados antes de abrir o WhatsApp.</p></div><button onClick={onRefresh} className="border border-noir-200 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-noir-600">Atualizar</button></div><div className="space-y-3">{orders.map(order => <div key={order.id} className="rounded-lg border border-noir-100 p-4"><div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold text-noir-900">Pedido {order.id.slice(0, 8)}</p><p className="text-xs text-noir-400">{new Date(order.createdAt).toLocaleString('pt-BR')}</p></div><p className="text-sm font-semibold text-noir-900">{formatPrice(order.subtotal)}</p></div><ul className="mt-3 space-y-1 text-xs text-noir-500">{order.items.map(item => <li key={`${order.id}-${item.productId}-${item.size}-${item.color}`}>{item.quantity}x {item.productName} · {item.color} · {item.size}</li>)}</ul></div>)}{!orders.length && <EmptyState text="Nenhum pedido salvo ainda." />}</div></section>;
-}
+
 
 function customerWhatsappUrl(order: Order): string {
   const digits = normalizeWhatsapp(order.customerWhatsapp || '');
@@ -1044,7 +1049,13 @@ function ConfirmableOrdersPanel({ orders, onRefresh, onConfirm, onCancel, onDele
                     </a>
                   )}
                   {completed ? (
-                    <span className="text-xs font-semibold text-emerald-600">Venda confirmada</span>
+                    <div className="flex flex-col items-start gap-2 sm:items-end">
+                      <span className="text-xs font-semibold text-emerald-600">Venda confirmada</span>
+                      {order.marketingConsent && !order.metaPurchaseSentAt && (
+                        <button onClick={() => onConfirm(order)} disabled={loading} className="border border-blue-200 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-blue-700 hover:border-blue-600 disabled:opacity-50">Reenviar evento Meta</button>
+                      )}
+                      {order.metaPurchaseSentAt && <span className="text-[11px] text-noir-400">Purchase enviado</span>}
+                    </div>
                   ) : cancelled ? (
                     <span className="text-xs font-semibold text-red-600">Cancelado</span>
                   ) : (

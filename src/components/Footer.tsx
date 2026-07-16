@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Camera, MessageCircle } from 'lucide-react';
 import { getSettings, loadCatalogData, normalizeWhatsapp } from '@/lib/data';
 import type { SiteSettings } from '@/types';
+import { openCookiePreferences } from '@/lib/metaPixel';
 
 const INSTAGRAM_URL = 'https://www.instagram.com/frazonstore/';
 
@@ -37,6 +38,9 @@ export default function Footer() {
         <p className="mt-6 text-[10px] text-white/50 sm:mt-8 sm:text-xs">
           &copy; 2024 {settings.storeName}. Todos os direitos reservados.
         </p>
+        <button type="button" onClick={openCookiePreferences} className="mt-2 text-[10px] text-white/50 underline-offset-4 hover:text-white hover:underline">
+          Preferências de cookies
+        </button>
       </div>
     </footer>
   );

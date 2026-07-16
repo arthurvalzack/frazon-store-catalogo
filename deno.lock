@@ -1,0 +1,30 @@
+{
+  "version": "5",
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.110.6"
+  },
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.110.6": "c7330c52c7c1b6215fd602626401ab0ff93bc7a7b75c77ffa80497de1a1733ee"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@tailwindcss/vite@4.1.17",
+        "npm:@types/node@22.19.17",
+        "npm:@types/react-dom@19.2.3",
+        "npm:@types/react@19.2.7",
+        "npm:@vitejs/plugin-react@5.1.1",
+        "npm:clsx@2.1.1",
+        "npm:framer-motion@^12.38.0",
+        "npm:lucide-react@^1.14.0",
+        "npm:react-dom@19.2.6",
+        "npm:react-router-dom@^7.15.0",
+        "npm:react@19.2.6",
+        "npm:tailwind-merge@3.4.0",
+        "npm:tailwindcss@4.1.17",
+        "npm:typescript@5.9.3",
+        "npm:vite@7.3.2"
+      ]
+    }
+  }
+}
