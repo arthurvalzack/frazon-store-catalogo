@@ -1,4 +1,4 @@
--- Frazon Store: secure order creation and Meta Conversions state.
+-- Frazon Store: Meta Conversions expansion phase.
 -- Apply after schema.sql and security_hardening_final.sql. Safe to rerun.
 begin;
 
@@ -14,6 +14,67 @@ alter table public.orders add column if not exists meta_purchase_event_id text;
 alter table public.orders add column if not exists meta_purchase_sent_at timestamptz;
 alter table public.orders add column if not exists meta_purchase_processing_at timestamptz;
 alter table public.orders add column if not exists meta_purchase_last_error text;
+
+-- Compatibility bridge: preserve the legacy direct-write path until lockdown.
+grant insert on table public.orders to anon, authenticated;
+do $$
+begin
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+    where schemaname = 'public' and tablename = 'orders'
+      and policyname = 'Public can create orders'
+  ) then
+    execute $policy$
+      create policy "Public can create orders" on public.orders
+      for insert to anon, authenticated
+      with check (
+        status = 'whatsapp'
+        and not coalesce(stock_deducted, false)
+        and completed_at is null
+        and jsonb_typeof(items) = 'array'
+        and jsonb_array_length(items) between 1 and 50
+        and subtotal >= 0
+        and marketing_consent = false
+        and meta_fbp is null
+        and meta_fbc is null
+        and meta_event_source_url is null
+        and meta_client_user_agent is null
+        and meta_initiate_checkout_event_id is null
+        and meta_initiate_checkout_sent_at is null
+        and meta_initiate_checkout_processing_at is null
+        and meta_purchase_event_id is null
+        and meta_purchase_sent_at is null
+        and meta_purchase_processing_at is null
+        and meta_purchase_last_error is null
+      )
+    $policy$;
+  end if;
+  execute $policy$
+    alter policy "Public can create orders" on public.orders
+    to anon, authenticated
+    with check (
+      status = 'whatsapp'
+      and not coalesce(stock_deducted, false)
+      and completed_at is null
+      and jsonb_typeof(items) = 'array'
+      and jsonb_array_length(items) between 1 and 50
+      and subtotal >= 0
+      and marketing_consent = false
+      and meta_fbp is null
+      and meta_fbc is null
+      and meta_event_source_url is null
+      and meta_client_user_agent is null
+      and meta_initiate_checkout_event_id is null
+      and meta_initiate_checkout_sent_at is null
+      and meta_initiate_checkout_processing_at is null
+      and meta_purchase_event_id is null
+      and meta_purchase_sent_at is null
+      and meta_purchase_processing_at is null
+      and meta_purchase_last_error is null
+    )
+  $policy$;
+end;
+$$;
 
 create or replace function public.create_public_order(
   p_items jsonb,
@@ -189,10 +250,6 @@ begin
   else raise exception 'Evento não permitido.'; end if;
 end; $$;
 
-revoke all on table public.orders from anon;
-revoke insert on table public.orders from authenticated;
-drop policy if exists "Public can create orders" on public.orders;
-drop policy if exists "Anon can insert orders" on public.orders;
 revoke all on function public.create_public_order(jsonb,text,text,boolean,text,text,text,text) from public;
 grant execute on function public.create_public_order(jsonb,text,text,boolean,text,text,text,text) to anon, authenticated;
 revoke all on function public.confirm_order_sale(uuid) from public, anon;
@@ -203,13 +260,20 @@ grant execute on function public.claim_meta_conversion(uuid,text,text) to servic
 grant execute on function public.finish_meta_conversion(uuid,text,boolean,text) to service_role;
 commit;
 
+-- Application order:
+-- 1. Apply this expansion; 2. configure/publish Edge Function; 3. publish frontend;
+-- 4. test orders/events; 5. apply meta_conversions_lockdown.sql.
+-- The direct INSERT grant and public INSERT policy intentionally remain in this phase,
+-- so the existing frontend continues to work during the transition.
+
 -- Rollback outline (run separately after reverting the application):
 -- begin;
 -- drop function if exists public.create_public_order(jsonb,text,text,boolean,text,text,text,text);
 -- grant insert on table public.orders to anon, authenticated;
--- create policy "Public can create orders" on public.orders for insert to anon,authenticated with check (
---   status='whatsapp' and not coalesce(stock_deducted,false) and completed_at is null
---   and jsonb_typeof(items)='array' and jsonb_array_length(items) between 1 and 50 and subtotal>=0);
+-- alter policy "Public can create orders" on public.orders to anon
+--   with check (status='whatsapp' and not coalesce(stock_deducted,false)
+--     and completed_at is null and jsonb_typeof(items)='array'
+--     and jsonb_array_length(items) between 1 and 50 and subtotal>=0);
 -- The previous confirm_order_sale body must be restored from the reviewed pre-migration revision before commit.
 -- drop function if exists public.finish_meta_conversion(uuid,text,boolean,text);
 -- drop function if exists public.claim_meta_conversion(uuid,text,text);

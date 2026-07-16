@@ -16,6 +16,7 @@ type OrderRow = {
   status: string;
   meta_initiate_checkout_event_id: string | null;
   meta_initiate_checkout_sent_at: string | null;
+  meta_purchase_event_id: string | null;
   meta_purchase_sent_at: string | null;
 };
 
@@ -156,7 +157,7 @@ Deno.serve(async (request) => {
   }
 
   const { data: order, error: orderError } = await adminClient.from("orders")
-    .select("id,items,subtotal,marketing_consent,meta_fbp,meta_fbc,meta_event_source_url,meta_client_user_agent,stock_deducted,status,meta_initiate_checkout_event_id,meta_initiate_checkout_sent_at,meta_purchase_sent_at")
+    .select("id,items,subtotal,marketing_consent,meta_fbp,meta_fbc,meta_event_source_url,meta_client_user_agent,stock_deducted,status,meta_initiate_checkout_event_id,meta_initiate_checkout_sent_at,meta_purchase_event_id,meta_purchase_sent_at")
     .eq("id", orderId).maybeSingle<OrderRow>();
   if (orderError || !order) return json(404, { error: "Order not found" }, origin, origins);
   if (!order.marketing_consent) return json(202, { skipped: true }, origin, origins);
@@ -167,7 +168,8 @@ Deno.serve(async (request) => {
     if (order.meta_initiate_checkout_sent_at) return json(200, { deduplicated: true }, origin, origins);
   } else {
     if (eventId !== `purchase-${order.id}`) return json(409, { error: "Event ID mismatch" }, origin, origins);
-    if (order.status !== "completed" || !order.stock_deducted) return json(409, { error: "Sale not confirmed" }, origin, origins);
+    if ((order.status !== "completed" && order.status !== "completed_sale") || !order.stock_deducted) return json(409, { error: "Sale not confirmed" }, origin, origins);
+    if (order.meta_purchase_event_id && order.meta_purchase_event_id !== eventId) return json(409, { error: "Event ID mismatch" }, origin, origins);
     if (order.meta_purchase_sent_at) return json(200, { deduplicated: true }, origin, origins);
   }
 

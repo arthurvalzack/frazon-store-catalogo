@@ -17,6 +17,8 @@ export interface MetaViewContentData {
 export interface MetaAddToCartData {
   id: string | number;
   name: string;
+  color: string;
+  size: string;
   price: number;
   quantity: number;
   category?: string | null;
@@ -286,12 +288,16 @@ export function trackAddToCart(
 
   const contentId = String(product.id).trim();
   const contentName = product.name.trim();
+  const color = product.color.trim();
+  const size = product.size.trim();
   const itemPrice = Number(product.price);
   const quantity = Number(product.quantity);
 
   if (
     !contentId ||
     !contentName ||
+    !color ||
+    !size ||
     !Number.isFinite(itemPrice) ||
     itemPrice < 0 ||
     !Number.isInteger(quantity) ||
@@ -314,6 +320,8 @@ export function trackAddToCart(
     contents: [
       {
         id: contentId,
+        color,
+        size,
         quantity,
         item_price: itemPrice,
       },

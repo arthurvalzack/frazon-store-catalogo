@@ -148,28 +148,37 @@ create policy "Public can read active categories" on public.categories
   for select using (is_active = true or auth.role() = 'authenticated');
 
 create policy "Admins can manage categories" on public.categories
-  for all to authenticated using (true) with check (true);
+  for all to authenticated using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 create policy "Public can read active products" on public.products
   for select using (is_active = true or auth.role() = 'authenticated');
 
 create policy "Admins can manage products" on public.products
-  for all to authenticated using (true) with check (true);
+  for all to authenticated using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 create policy "Public can read site settings" on public.site_settings
   for select using (true);
 
 create policy "Admins can manage site settings" on public.site_settings
-  for all to authenticated using (true) with check (true);
+  for all to authenticated using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 create policy "Public can create orders" on public.orders
-  for insert to anon with check (true);
+  for insert to anon with check (
+    status = 'whatsapp'
+    and not coalesce(stock_deducted, false)
+    and completed_at is null
+    and jsonb_typeof(items) = 'array'
+    and jsonb_array_length(items) between 1 and 50
+    and subtotal >= 0
+  );
 
 create policy "Admins can read orders" on public.orders
   for select to authenticated using (true);
 
 create policy "Admins can update orders" on public.orders
-  for update to authenticated using (true) with check (true);
+  for update to authenticated
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 create or replace function public.confirm_order_sale(order_id uuid)
 returns void

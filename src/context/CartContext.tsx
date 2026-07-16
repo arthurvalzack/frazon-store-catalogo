@@ -236,6 +236,8 @@ export function CartProvider({
       trackAddToCart({
         id: product.id,
         name: product.name,
+        color: newItem.color,
+        size: newItem.size,
         price: product.price,
         quantity: newItem.quantity,
         category: product.category ?? null,
@@ -355,6 +357,8 @@ export function CartProvider({
         trackAddToCart({
           id: product.id,
           name: product.name,
+          color: currentItem.color,
+          size: currentItem.size,
           price: product.price,
           quantity: quantity - previousQuantity,
           category: product.category ?? null,
@@ -498,9 +502,7 @@ export function CartProvider({
             "InitiateCheckout",
             order.id,
             initiateCheckoutEventId
-          ).catch((conversionError) => {
-            console.warn("[META CONVERSION PENDING]", conversionError instanceof Error ? conversionError.message : "unknown");
-          });
+          ).catch(() => undefined);
         }
 
         window.open(
